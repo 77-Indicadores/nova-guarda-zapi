@@ -1,0 +1,11 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+server.out.log
+server.err.log
+ngrok.exe
+app_backup_antes_ajuste_ngrok.py
+MAPEAMENTO_NOVA_GUARDA.txt
