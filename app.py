@@ -45,9 +45,9 @@ CHAT_HTML = """
     body {
       margin: 0;
       min-height: 100vh;
-      color: #132033;
+      color: #10251a;
       font-family: Arial, Helvetica, sans-serif;
-      background: #e8edf5;
+      background: #eaf4ee;
     }
     .shell {
       width: min(1120px, calc(100vw - 28px));
@@ -62,7 +62,7 @@ CHAT_HTML = """
       gap: 12px;
       padding: 10px 14px;
       color: #fff;
-      background: linear-gradient(180deg, #1f5fbf, #16437f);
+      background: linear-gradient(180deg, #23845a, #145a3b);
     }
     h1 { margin: 0; font-size: 18px; letter-spacing: 0; }
     .status { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
@@ -78,18 +78,18 @@ CHAT_HTML = """
       border: 1px solid #98a6bd;
       border-radius: 4px;
       padding: 10px;
-      color: #132033;
+      color: #10251a;
       background: #fff;
       font: inherit;
     }
     textarea { min-height: 150px; resize: vertical; line-height: 1.4; }
     button {
       width: 100%;
-      border: 1px solid #0d3268;
+      border: 1px solid #0f4c33;
       border-radius: 4px;
       padding: 11px 14px;
       color: #fff;
-      background: linear-gradient(180deg, #2b75df, #164a98);
+      background: linear-gradient(180deg, #2f9d6a, #17623f);
       font-weight: 700;
       cursor: pointer;
     }
@@ -115,7 +115,7 @@ CHAT_HTML = """
       padding: 10px;
     }
     .status-card strong { display: block; margin-bottom: 4px; font-size: 13px; }
-    .status-card span { color: #16437f; font-weight: 700; }
+    .status-card span { color: #17623f; font-weight: 700; }
     .mode-row {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -136,18 +136,18 @@ CHAT_HTML = """
       cursor: pointer;
     }
     .mode-row input:checked + span {
-      border-color: #164a98;
+      border-color: #17623f;
       color: #fff;
-      background: #1f5fbf;
+      background: #23845a;
     }
     .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     .toolbar h2 { margin: 0; font-size: 16px; }
-    .small-button { width: auto; padding: 7px 10px; font-size: 12px; background: #fff; color: #16437f; border-color: #b8c4d8; }
+    .small-button { width: auto; padding: 7px 10px; font-size: 12px; background: #fff; color: #17623f; border-color: #b8c4d8; }
     .timeline { display: grid; gap: 10px; max-height: calc(100vh - 170px); overflow: auto; padding-right: 4px; align-content: start; }
     .event { max-width: 88%; border: 1px solid #b8c4d8; border-radius: 6px; background: #fff8df; overflow: hidden; }
     .event.received { justify-self: start; }
     .event.system { justify-self: center; max-width: 100%; background: #f7f9fc; }
-    .event.sent { justify-self: end; background: #eaf3ff; }
+    .event.sent { justify-self: end; background: #e6f6ed; }
     .event-head {
       display: flex;
       justify-content: space-between;
@@ -168,14 +168,14 @@ CHAT_HTML = """
       border-radius: 4px;
       background: #fff;
       border: 1px solid #b8c4d8;
-      color: #16437f;
+      color: #17623f;
       font-size: 12px;
       font-weight: 700;
     }
     .map-link {
       display: inline-block;
       margin: 0 10px 10px;
-      color: #16437f;
+      color: #17623f;
       font-size: 12px;
       font-weight: 700;
     }
@@ -559,8 +559,8 @@ LOCATION_HTML = """
       min-height: 100vh;
       display: grid;
       place-items: center;
-      background: #e8edf5;
-      color: #132033;
+      background: #eaf4ee;
+      color: #10251a;
       font-family: Arial, Helvetica, sans-serif;
     }
     .box {
@@ -575,15 +575,15 @@ LOCATION_HTML = """
     p { color: #667085; line-height: 1.45; }
     button {
       width: 100%;
-      border: 1px solid #0d3268;
+      border: 1px solid #0f4c33;
       border-radius: 4px;
       padding: 12px 14px;
       color: #fff;
-      background: linear-gradient(180deg, #2b75df, #164a98);
+      background: linear-gradient(180deg, #2f9d6a, #17623f);
       font-weight: 700;
       cursor: pointer;
     }
-    .status { margin-top: 12px; color: #16437f; font-weight: 700; }
+    .status { margin-top: 12px; color: #17623f; font-weight: 700; }
   </style>
 </head>
 <body>
