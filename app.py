@@ -27,7 +27,8 @@ RECEIVED_EVENTS: deque[dict[str, Any]] = deque(maxlen=50)
 AGENDA_STATE: dict[str, dict[str, Any]] = {}
 TERMS_STATE: dict[str, dict[str, Any]] = {}
 LOCATION_LINKS: dict[str, dict[str, Any]] = {}
-PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+DEFAULT_PUBLIC_BASE_URL = "https://testezapi.77indicadores.com.br"
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", DEFAULT_PUBLIC_BASE_URL).strip().rstrip("/")
 TERMS_PDF_PATH = PROJECT_DIR / "termo_aceite_ficticio.pdf"
 TERMS_ACCEPTANCE_TEXT = "li e aceito os termos"
 TERMS_REJECTION_TEXT = "não aceito os termos"
@@ -1792,10 +1793,13 @@ def main() -> None:
     load_dotenv(encoding="utf-8-sig")
 
     try:
-        public_url = start_ngrok_tunnel(PORT)
-        if not PUBLIC_BASE_URL:
+        if PUBLIC_BASE_URL:
+            logger.info("Usando URL pública configurada: %s", PUBLIC_BASE_URL)
+            update_zapi_webhook(PUBLIC_BASE_URL)
+        else:
+            public_url = start_ngrok_tunnel(PORT)
             PUBLIC_BASE_URL = public_url
-        update_zapi_webhook(public_url)
+            update_zapi_webhook(public_url)
 
     except (RuntimeError, PyngrokError, requests.RequestException) as exc:
         logger.exception("Falha durante a inicialização: %s", exc)
