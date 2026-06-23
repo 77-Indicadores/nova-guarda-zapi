@@ -1,7 +1,6 @@
-﻿import logging
+import logging
 import base64
 import os
-import sys
 import uuid
 from collections import deque
 from datetime import datetime
@@ -11,9 +10,6 @@ from typing import Any
 import requests
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template_string, request
-from pyngrok import ngrok
-from pyngrok.conf import PyngrokConfig
-from pyngrok.exception import PyngrokError
 
 
 load_dotenv(encoding="utf-8-sig")
@@ -27,7 +23,7 @@ RECEIVED_EVENTS: deque[dict[str, Any]] = deque(maxlen=50)
 AGENDA_STATE: dict[str, dict[str, Any]] = {}
 TERMS_STATE: dict[str, dict[str, Any]] = {}
 LOCATION_LINKS: dict[str, dict[str, Any]] = {}
-DEFAULT_PUBLIC_BASE_URL = "https://testezapi.77indicadores.com.br"
+DEFAULT_PUBLIC_BASE_URL = "https://testezapi.77indicadores.com.br/webhook"
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", DEFAULT_PUBLIC_BASE_URL).strip().rstrip("/")
 TERMS_PDF_PATH = PROJECT_DIR / "termo_aceite_ficticio.pdf"
 TERMS_ACCEPTANCE_TEXT = "li e aceito os termos"
@@ -641,15 +637,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def get_required_env(name: str) -> str:
-    value = os.getenv(name)
-
-    if not value or not value.strip():
-        raise RuntimeError(f"Variável de ambiente obrigatória não encontrada: {name}")
-
-    return value.strip()
-
-
 def normalize_phone(value: str) -> str:
     phone = "".join(char for char in str(value) if char.isdigit())
     if len(phone) in {10, 11}:
@@ -927,118 +914,10 @@ def update_agenda_state(phone: str, decision: str, text: str) -> dict[str, Any]:
     return state
 
 
-def build_zapi_update_url(instance_id: str, instance_token: str) -> str:
-    return (
-        f"{ZAPI_BASE_URL}/instances/{instance_id}"
-        f"/token/{instance_token}/update-every-webhooks"
-    )
-
-
-def start_ngrok_tunnel(port: int) -> str:
-    ngrok_authtoken = os.getenv("NGROK_AUTHTOKEN", "").strip()
-    pyngrok_config = None
-
-    if LOCAL_NGROK_PATH.exists():
-        pyngrok_config = PyngrokConfig(ngrok_path=str(LOCAL_NGROK_PATH))
-        logger.info("Usando ngrok local: %s", LOCAL_NGROK_PATH)
-    else:
-        logger.warning(
-            "ngrok.exe local não encontrado em %s. Vou usar o padrão do pyngrok.",
-            LOCAL_NGROK_PATH,
-        )
-
-    if ngrok_authtoken and ngrok_authtoken != "COLE_SEU_TOKEN_DO_NGROK_AQUI":
-        try:
-            logger.info("Configurando authtoken do ngrok...")
-            ngrok.set_auth_token(ngrok_authtoken, pyngrok_config=pyngrok_config)
-            logger.info("Authtoken do ngrok configurado com sucesso.")
-        except Exception as exc:
-            logger.warning(
-                "Não foi possível salvar o authtoken pelo pyngrok. "
-                "Vou tentar continuar usando a configuração já salva no ngrok. Erro: %s",
-                exc,
-            )
-    else:
-        logger.warning(
-            "NGROK_AUTHTOKEN vazio ou inválido no .env. "
-            "Vou tentar usar a configuração já salva no ngrok."
-        )
-
-    logger.info("Abrindo túnel ngrok para a porta %s...", port)
-
-    tunnel = ngrok.connect(addr=port, proto="http", pyngrok_config=pyngrok_config)
-    public_url = tunnel.public_url
-
-    if not public_url.startswith("https://"):
-        public_url = public_url.replace("http://", "https://", 1)
-
-    logger.info("URL pública do ngrok: %s", public_url)
-
-    return public_url
-
-
-def update_zapi_webhook(public_url: str) -> dict[str, Any]:
-    instance_id = get_required_env("ZAPI_INSTANCE_ID")
-    instance_token = get_required_env("ZAPI_INSTANCE_TOKEN")
-    client_token = get_required_env("ZAPI_CLIENT_TOKEN")
-
-    webhook_url = f"{public_url}{WEBHOOK_PATH}"
-    update_url = build_zapi_update_url(instance_id, instance_token)
-
-    headers = {
-        "Client-Token": client_token,
-        "Content-Type": "application/json",
-    }
-
-    payload = {"value": webhook_url}
-
-    logger.info("Atualizando webhook da Z-API para: %s", webhook_url)
-
-    try:
-        response = requests.put(
-            update_url,
-            headers=headers,
-            json=payload,
-            timeout=30,
-        )
-
-        logger.info("Status Z-API: %s", response.status_code)
-        logger.info("Resposta Z-API: %s", response.text)
-
-        response.raise_for_status()
-        response_payload = response.json()
-
-        if isinstance(response_payload, dict) and response_payload.get("error"):
-            raise RuntimeError(f"Z-API retornou erro: {response_payload}")
-
-    except requests.RequestException as exc:
-        status_code = getattr(getattr(exc, "response", None), "status_code", None)
-        response_text = getattr(getattr(exc, "response", None), "text", "")
-
-        logger.exception(
-            "Erro ao atualizar webhook da Z-API. Status: %s | Resposta: %s",
-            status_code,
-            response_text,
-        )
-
-        raise
-    except ValueError as exc:
-        logger.exception("A Z-API retornou uma resposta que não é JSON válido.")
-        raise RuntimeError("Resposta inválida da Z-API.") from exc
-
-    logger.info("Webhook atualizado com sucesso.")
-
-    return {
-        "status_code": response.status_code,
-        "response": response_payload,
-        "webhook_url": webhook_url,
-    }
-
-
 def send_zapi_text(phone: str, message: str) -> dict[str, Any]:
-    instance_id = get_required_env("ZAPI_INSTANCE_ID")
-    instance_token = get_required_env("ZAPI_INSTANCE_TOKEN")
-    client_token = get_required_env("ZAPI_CLIENT_TOKEN")
+    instance_id = os.getenv("ZAPI_INSTANCE_ID")
+    instance_token = os.getenv("ZAPI_INSTANCE_TOKEN")
+    client_token = os.getenv("ZAPI_CLIENT_TOKEN")
 
     send_url = (
         f"{ZAPI_BASE_URL}/instances/{instance_id}"
@@ -1067,9 +946,9 @@ def send_zapi_text(phone: str, message: str) -> dict[str, Any]:
 
 
 def send_zapi_document(phone: str, document_path: Path, caption: str) -> dict[str, Any]:
-    instance_id = get_required_env("ZAPI_INSTANCE_ID")
-    instance_token = get_required_env("ZAPI_INSTANCE_TOKEN")
-    client_token = get_required_env("ZAPI_CLIENT_TOKEN")
+    instance_id = os.getenv("ZAPI_INSTANCE_ID")
+    instance_token = os.getenv("ZAPI_INSTANCE_TOKEN")
+    client_token = os.getenv("ZAPI_CLIENT_TOKEN")
 
     document_base64 = base64.b64encode(document_path.read_bytes()).decode("ascii")
     send_url = (
@@ -1104,9 +983,9 @@ def send_zapi_document(phone: str, document_path: Path, caption: str) -> dict[st
 
 
 def send_zapi_agenda_buttons(phone: str, message: str) -> dict[str, Any]:
-    instance_id = get_required_env("ZAPI_INSTANCE_ID")
-    instance_token = get_required_env("ZAPI_INSTANCE_TOKEN")
-    client_token = get_required_env("ZAPI_CLIENT_TOKEN")
+    instance_id = os.getenv("ZAPI_INSTANCE_ID")
+    instance_token = os.getenv("ZAPI_INSTANCE_TOKEN")
+    client_token = os.getenv("ZAPI_CLIENT_TOKEN")
 
     send_url = (
         f"{ZAPI_BASE_URL}/instances/{instance_id}"
@@ -1145,9 +1024,9 @@ def send_zapi_agenda_buttons(phone: str, message: str) -> dict[str, Any]:
 
 
 def send_zapi_terms_buttons(phone: str) -> dict[str, Any]:
-    instance_id = get_required_env("ZAPI_INSTANCE_ID")
-    instance_token = get_required_env("ZAPI_INSTANCE_TOKEN")
-    client_token = get_required_env("ZAPI_CLIENT_TOKEN")
+    instance_id = os.getenv("ZAPI_INSTANCE_ID")
+    instance_token = os.getenv("ZAPI_INSTANCE_TOKEN")
+    client_token = os.getenv("ZAPI_CLIENT_TOKEN")
 
     send_url = (
         f"{ZAPI_BASE_URL}/instances/{instance_id}"
@@ -1185,9 +1064,9 @@ def send_zapi_terms_buttons(phone: str) -> dict[str, Any]:
 
 
 def send_zapi_checkin_options(phone: str, message: str, use_location_link: bool = False) -> dict[str, Any]:
-    instance_id = get_required_env("ZAPI_INSTANCE_ID")
-    instance_token = get_required_env("ZAPI_INSTANCE_TOKEN")
-    client_token = get_required_env("ZAPI_CLIENT_TOKEN")
+    instance_id = os.getenv("ZAPI_INSTANCE_ID")
+    instance_token = os.getenv("ZAPI_INSTANCE_TOKEN")
+    client_token = os.getenv("ZAPI_CLIENT_TOKEN")
 
     send_url = (
         f"{ZAPI_BASE_URL}/instances/{instance_id}"
@@ -1240,9 +1119,9 @@ def send_zapi_checkin_options(phone: str, message: str, use_location_link: bool 
 
 
 def send_zapi_late_buttons(phone: str) -> dict[str, Any]:
-    instance_id = get_required_env("ZAPI_INSTANCE_ID")
-    instance_token = get_required_env("ZAPI_INSTANCE_TOKEN")
-    client_token = get_required_env("ZAPI_CLIENT_TOKEN")
+    instance_id = os.getenv("ZAPI_INSTANCE_ID")
+    instance_token = os.getenv("ZAPI_INSTANCE_TOKEN")
+    client_token = os.getenv("ZAPI_CLIENT_TOKEN")
 
     send_url = (
         f"{ZAPI_BASE_URL}/instances/{instance_id}"
@@ -1281,9 +1160,9 @@ def send_zapi_late_buttons(phone: str) -> dict[str, Any]:
 
 
 def send_zapi_no_show_reasons(phone: str) -> dict[str, Any]:
-    instance_id = get_required_env("ZAPI_INSTANCE_ID")
-    instance_token = get_required_env("ZAPI_INSTANCE_TOKEN")
-    client_token = get_required_env("ZAPI_CLIENT_TOKEN")
+    instance_id = os.getenv("ZAPI_INSTANCE_ID")
+    instance_token = os.getenv("ZAPI_INSTANCE_TOKEN")
+    client_token = os.getenv("ZAPI_CLIENT_TOKEN")
 
     send_url = (
         f"{ZAPI_BASE_URL}/instances/{instance_id}"
@@ -1791,19 +1670,6 @@ def create_app() -> Flask:
 def main() -> None:
     global PUBLIC_BASE_URL
     load_dotenv(encoding="utf-8-sig")
-
-    try:
-        if PUBLIC_BASE_URL:
-            logger.info("Usando URL pública configurada: %s", PUBLIC_BASE_URL)
-            update_zapi_webhook(PUBLIC_BASE_URL)
-        else:
-            public_url = start_ngrok_tunnel(PORT)
-            PUBLIC_BASE_URL = public_url
-            update_zapi_webhook(public_url)
-
-    except (RuntimeError, PyngrokError, requests.RequestException) as exc:
-        logger.exception("Falha durante a inicialização: %s", exc)
-        sys.exit(1)
 
     app = create_app()
 
