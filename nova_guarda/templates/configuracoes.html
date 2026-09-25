@@ -89,10 +89,11 @@
 <div class="card">
   <p class="card-title">Ações de teste assistido</p>
   <p class="card-sub">
-    Cria dados de teste localmente (a 77Gestão não tem endpoint de criação de cooperado/escala), mas envia a
-    mensagem pelo WhatsApp de verdade. Use um telefone real para receber e responder as mensagens.
-    Pode ser repetido quantas vezes quiser, com o mesmo telefone ou telefones diferentes — cada clique em
-    "Criar escala" gera uma escala nova.
+    Com 77Gestão em modo <strong>Real</strong>, cria cooperado e escala de verdade lá (via API) e manda a
+    mensagem pelo WhatsApp de verdade. Em modo <strong>Fake</strong>, cria só localmente. Use um telefone real
+    para receber e responder as mensagens. Pode ser repetido quantas vezes quiser, com o mesmo telefone ou
+    telefones diferentes — cada clique em "Criar escala" gera uma escala nova (duração curta, de propósito,
+    para o check-out automático ficar disponível rápido durante o teste).
   </p>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px">
     <form method="post" action="{{ url_for('teste_assistido_cooperado') }}" style="display:flex;flex-direction:column;gap:10px">

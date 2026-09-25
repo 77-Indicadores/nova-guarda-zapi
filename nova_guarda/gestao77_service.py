@@ -630,7 +630,11 @@ def seed_test_booking_and_send(phone: str, client_name: str = "") -> dict[str, A
         raise RuntimeError("Cooperado sem partner_id da 77Gestão. Recrie o cooperado de teste.")
 
     start = br_now().astimezone(timezone.utc)
-    end = start + timedelta(hours=9)
+    # Janela curta de propósito: isso é dado de teste assistido, feito para
+    # demonstração ao vivo. Um turno real duraria horas, mas aí o check-out
+    # automático (via poller) só ficaria elegível bem depois do fim do turno,
+    # o que inviabiliza testar o ciclo completo em uma apresentação.
+    end = start + timedelta(minutes=5)
     start_at = start.strftime("%Y-%m-%dT%H:%M:%SZ")
     end_at = end.strftime("%Y-%m-%dT%H:%M:%SZ")
 
