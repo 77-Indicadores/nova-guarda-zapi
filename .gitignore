@@ -3,9 +3,13 @@
 venv/
 __pycache__/
 *.pyc
+*.sqlite3
 .pytest_cache/
 server.out.log
 server.err.log
 ngrok.exe
 app_backup_antes_ajuste_ngrok.py
 MAPEAMENTO_NOVA_GUARDA.txt
+sites-publish/
+tmp/
+output/

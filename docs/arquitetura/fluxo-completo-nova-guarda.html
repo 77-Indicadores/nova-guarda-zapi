@@ -1,0 +1,426 @@
+<div id="ng-flow-v2">
+  <style>
+    #ng-flow-v2 {
+      --line: color-mix(in srgb, var(--border) 75%, var(--foreground) 25%);
+      --channel: color-mix(in srgb, var(--blue) 18%, transparent);
+      --backend: color-mix(in srgb, var(--green) 18%, transparent);
+      --local: color-mix(in srgb, var(--purple) 16%, transparent);
+      --gestao: color-mix(in srgb, var(--orange) 18%, transparent);
+      --blocked: color-mix(in srgb, var(--red) 16%, transparent);
+      color: var(--foreground);
+      font: inherit;
+    }
+
+    #ng-flow-v2 * { box-sizing: border-box; }
+    #ng-flow-v2 h2 { margin: 0 0 8px; font-weight: 500; }
+    #ng-flow-v2 p { margin: 0; color: var(--muted-foreground); }
+    #ng-flow-v2 code { white-space: normal; }
+
+    #ng-flow-v2 .global {
+      margin: 14px 0 18px;
+      padding: 10px 12px;
+      border-left: 4px solid var(--green);
+      background: var(--backend);
+    }
+
+    #ng-flow-v2 .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+
+    #ng-flow-v2 .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--foreground);
+    }
+
+    #ng-flow-v2 .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--foreground);
+    }
+
+    #ng-flow-v2 .dot.channel { background: var(--blue); }
+    #ng-flow-v2 .dot.backend { background: var(--green); }
+    #ng-flow-v2 .dot.local { background: var(--purple); }
+    #ng-flow-v2 .dot.gestao { background: var(--orange); }
+    #ng-flow-v2 .dot.blocked { background: var(--red); }
+
+    #ng-flow-v2 .grid {
+      display: grid;
+      grid-template-columns: 1.05fr 1.25fr 1.6fr 1.25fr 1.4fr;
+      gap: 10px;
+      align-items: start;
+    }
+
+    #ng-flow-v2 .lane-title {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      padding: 9px;
+      border-bottom: 2px solid var(--border);
+      background: var(--background);
+      font-weight: 500;
+      text-align: center;
+    }
+
+    #ng-flow-v2 .lane {
+      display: grid;
+      gap: 10px;
+    }
+
+    #ng-flow-v2 .box {
+      min-height: 78px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      background: color-mix(in srgb, var(--muted) 68%, transparent);
+    }
+
+    #ng-flow-v2 .box.channel { background: var(--channel); }
+    #ng-flow-v2 .box.backend { background: var(--backend); }
+    #ng-flow-v2 .box.local { background: var(--local); }
+    #ng-flow-v2 .box.gestao { background: var(--gestao); }
+    #ng-flow-v2 .box.blocked { background: var(--blocked); }
+
+    #ng-flow-v2 .box strong {
+      display: block;
+      margin-bottom: 4px;
+      font-weight: 500;
+    }
+
+    #ng-flow-v2 .box span {
+      display: block;
+      color: var(--muted-foreground);
+    }
+
+    #ng-flow-v2 .flow-row {
+      display: contents;
+    }
+
+    #ng-flow-v2 .arrow {
+      min-height: 28px;
+      color: var(--muted-foreground);
+      text-align: center;
+      border-bottom: 1px solid var(--line);
+      position: relative;
+      padding: 4px 6px 9px;
+      align-self: center;
+    }
+
+    #ng-flow-v2 .arrow::after {
+      content: "";
+      position: absolute;
+      right: -4px;
+      bottom: -4px;
+      width: 8px;
+      height: 8px;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      transform: rotate(-45deg);
+    }
+
+    #ng-flow-v2 .status-band {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    #ng-flow-v2 .status {
+      padding: 9px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--gestao);
+      text-align: center;
+      font-weight: 500;
+    }
+
+    #ng-flow-v2 .local-band {
+      margin-top: 10px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    #ng-flow-v2 .local-only {
+      padding: 9px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--local);
+    }
+
+    #ng-flow-v2 .errors {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    #ng-flow-v2 .error {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 9px;
+      background: var(--blocked);
+    }
+
+    @media (max-width: 900px) {
+      #ng-flow-v2 .grid,
+      #ng-flow-v2 .status-band,
+      #ng-flow-v2 .local-band,
+      #ng-flow-v2 .errors {
+        grid-template-columns: 1fr;
+      }
+
+      #ng-flow-v2 .lane-title {
+        position: static;
+        text-align: left;
+      }
+
+      #ng-flow-v2 .arrow {
+        text-align: left;
+        border-bottom: 0;
+        border-left: 1px solid var(--line);
+        margin-left: 12px;
+        padding: 0 0 0 12px;
+      }
+
+      #ng-flow-v2 .arrow::after {
+        left: -5px;
+        right: auto;
+        bottom: -2px;
+        transform: rotate(45deg);
+      }
+    }
+
+    #ng-flow-v2 .detail-grid {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    #ng-flow-v2 .detail {
+      border-top: 2px solid var(--border);
+      padding-top: 10px;
+    }
+
+    #ng-flow-v2 .detail h3 {
+      margin: 0 0 10px;
+      font-weight: 500;
+    }
+
+    #ng-flow-v2 table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    #ng-flow-v2 th,
+    #ng-flow-v2 td {
+      border-bottom: 1px solid var(--border);
+      padding: 8px 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    #ng-flow-v2 th {
+      color: var(--muted-foreground);
+      font-weight: 500;
+    }
+
+    #ng-flow-v2 .state-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    #ng-flow-v2 .state {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 9px;
+      background: var(--local);
+    }
+
+    @media (max-width: 900px) {
+      #ng-flow-v2 .detail-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+
+  <h2>Fluxo Completo Nova Guarda</h2>
+  <p>Visão ponta a ponta da operação: onboarding iniciado pelo cooperado, canais convergindo no backend, validação na 77Gestão, consentimento no banco local e respostas pelo mesmo provider de origem.</p>
+
+  <div class="global">
+    <strong>Regra global</strong>
+    <p>Todo cálculo de “escala do dia”, timestamps, auditoria e decisões operacionais usam <code>America/Sao_Paulo</code>, independente do fuso do servidor.</p>
+  </div>
+
+  <div class="legend" aria-label="Legenda">
+    <span class="pill"><span class="dot channel"></span>Canais</span>
+    <span class="pill"><span class="dot backend"></span>Nosso backend</span>
+    <span class="pill"><span class="dot local"></span>Banco local</span>
+    <span class="pill"><span class="dot gestao"></span>77Gestão</span>
+    <span class="pill"><span class="dot blocked"></span>Bloqueios/erros</span>
+  </div>
+
+  <div class="grid" aria-label="Raias por responsabilidade">
+    <div class="lane-title">Cooperado</div>
+    <div class="lane-title">Canais</div>
+    <div class="lane-title">Nosso backend</div>
+    <div class="lane-title">Banco local</div>
+    <div class="lane-title">77Gestão</div>
+
+    <div class="box"><strong>Inicia conversa</strong><span>Manda “ativar”, “começar” ou mensagem equivalente.</span></div>
+    <div class="box channel"><strong>Z-API / Meta / Chat Dev</strong><span>Recebe texto, botão, lista ou localização.</span></div>
+    <div class="box backend"><strong>Normaliza entrada</strong><span>Converte payload Z-API, Meta Cloud ou Chat Dev para evento interno único.</span></div>
+    <div class="box local"><strong>Consulta estado</strong><span>Verifica se já existe ativação, aceite, recusa ou bloqueio do telefone.</span></div>
+    <div class="box gestao"><strong>Fonte de permissão</strong><span><code>GET /partners?type=cooperado</code>.</span></div>
+
+    <div class="arrow">telefone + mensagem</div>
+    <div class="arrow">webhook de entrada</div>
+    <div class="arrow">telefone normalizado</div>
+    <div class="arrow">partner_id, consentimento</div>
+    <div class="arrow">partners + phones[]</div>
+
+    <div class="box blocked"><strong>Número não encontrado</strong><span>Cooperado é orientado a atualizar o WhatsApp com a equipe.</span></div>
+    <div class="box channel"><strong>Saída pelo mesmo canal</strong><span>Z-API, Meta ou Chat Dev entrega a resposta ao cooperado.</span></div>
+    <div class="box backend"><strong>Valida cooperado</strong><span>Telefone precisa existir em <code>phones[]</code>, parceiro ativo e tipo cooperado.</span></div>
+    <div class="box local"><strong>Bloqueio local</strong><span>Registra tentativa não autorizada para auditoria.</span></div>
+    <div class="box blocked"><strong>Parceiro inativo</strong><span>Sem onboarding e sem fluxo operacional.</span></div>
+
+    <div class="box"><strong>Recebe orientação</strong><span>Salva contato da Nova Guarda para receber avisos.</span></div>
+    <div class="box channel"><strong>Mensagem de onboarding</strong><span>Texto de boas-vindas, pedido para salvar contato e termo.</span></div>
+    <div class="box backend"><strong>Envia termo</strong><span>Monta mensagem, PDF/link quando aplicável e botões: Aceito / Não aceito.</span></div>
+    <div class="box local"><strong>Estado pendente</strong><span>Guarda telefone, partner_id, nome, data BR e status <code>terms_sent</code>.</span></div>
+    <div class="box gestao"><strong>Sem escrita de termo</strong><span>77Gestão não recebe aceite; consentimento é nosso.</span></div>
+
+    <div class="arrow">clique no botão</div>
+    <div class="arrow">button/list reply</div>
+    <div class="arrow">decisão interna</div>
+    <div class="arrow">accepted/rejected</div>
+    <div class="arrow">sem sync</div>
+
+    <div class="box"><strong>Aceita ou recusa</strong><span>Aceite libera; recusa bloqueia.</span></div>
+    <div class="box channel"><strong>Confirmação ao cooperado</strong><span>Resposta volta por Z-API, Meta Cloud ou Chat Dev.</span></div>
+    <div class="box backend"><strong>Ativação</strong><span>Se aceitou, marca cooperado como ativo para escala e check-in.</span></div>
+    <div class="box local"><strong>Consentimento</strong><span>Persiste aceite/recusa, origem, timestamps BR e histórico.</span></div>
+    <div class="box gestao"><strong>Validação futura</strong><span>Segue sendo fonte de cooperados, escalas e appointments.</span></div>
+
+    <div class="box"><strong>Recebe escala</strong><span>Somente se ativado e permitido.</span></div>
+    <div class="box channel"><strong>Envio de escala</strong><span>Provider escolhido entrega mensagem e botões Confirmar / Cancelar.</span></div>
+    <div class="box backend"><strong>Busca escalas</strong><span>Consulta pendentes, escolhe público ativado e prepara mensagem.</span></div>
+    <div class="box local"><strong>Guarda envio</strong><span>Registra booking, telefone, status local e evento de sync.</span></div>
+    <div class="box gestao"><strong>Escalas</strong><span><code>GET /bookings/summary/partner</code> e <code>GET /appointments?booking_id</code>.</span></div>
+
+    <div class="arrow">botão de resposta</div>
+    <div class="arrow">reply normalizado</div>
+    <div class="arrow">status operacional</div>
+    <div class="arrow">auditoria</div>
+    <div class="arrow">POST status</div>
+
+    <div class="box"><strong>Confirma / cancela</strong><span>Confirmar aprova; cancelar recusa operacionalmente. Reagendar não entra neste contrato enquanto a 77Gestão não expuser status/endpoint específico.</span></div>
+    <div class="box channel"><strong>Resposta final</strong><span>Mensagem volta pelo mesmo canal usado na conversa.</span></div>
+    <div class="box backend"><strong>Sincroniza booking</strong><span>Envia <code>sent</code>, <code>confirmed</code> ou <code>declined</code>.</span></div>
+    <div class="box local"><strong>Histórico da escala</strong><span>Guarda decisão, texto recebido e resultado da API.</span></div>
+    <div class="box gestao"><strong>Estados da escala</strong><span><code>POST /bookings/{id}/schedule-response</code>.</span></div>
+
+    <div class="box"><strong>Operação do dia</strong><span>Recebe check-in da escala do dia.</span></div>
+    <div class="box channel"><strong>Check-in</strong><span>Mensagem com Sim, cheguei / Vou atrasar / Não vou.</span></div>
+    <div class="box backend"><strong>Seleciona appointment</strong><span>Usa <code>America/Sao_Paulo</code> para achar o appointment do dia.</span></div>
+    <div class="box local"><strong>Estado do dia</strong><span>Guarda check-in enviado, atraso, não vou e motivo.</span></div>
+    <div class="box gestao"><strong>Appointments</strong><span>Fonte do <code>appointment_id</code> usado na operação.</span></div>
+
+    <div class="box"><strong>Cheguei</strong><span>Envia localização ou abre link de captura.</span></div>
+    <div class="box channel"><strong>Localização</strong><span>Payload com latitude, longitude, endereço ou link callback.</span></div>
+    <div class="box backend"><strong>Sincroniza check-in/out</strong><span>Envia <code>checked_in</code> ao chegar e <code>checked_out</code> no encerramento.</span></div>
+    <div class="box local"><strong>Auditoria</strong><span>Guarda localização, horário BR e retorno da API.</span></div>
+    <div class="box gestao"><strong>Estados do appointment</strong><span><code>POST /appointments/{id}/status</code>.</span></div>
+  </div>
+
+  <div class="status-band" aria-label="Status enviados para 77Gestão">
+    <div class="status"><code>sent</code></div>
+    <div class="status"><code>confirmed</code></div>
+    <div class="status"><code>declined</code></div>
+    <div class="status"><code>checked_in</code></div>
+    <div class="status"><code>checked_out</code></div>
+  </div>
+
+  <div class="local-band" aria-label="Estados apenas locais">
+    <div class="local-only"><strong>Atraso</strong><p>15, 30 ou 60 minutos ficam só no nosso banco, sem sync com a 77Gestão por enquanto.</p></div>
+    <div class="local-only"><strong>Não vou</strong><p>Motivo e observações ficam só no nosso banco, sem sync com a 77Gestão por enquanto.</p></div>
+  </div>
+
+  <div class="errors" aria-label="Erros e bloqueios">
+    <div class="error"><strong>Número não encontrado</strong><p>Bloqueia onboarding e orienta atualizar cadastro.</p></div>
+    <div class="error"><strong>Parceiro inativo</strong><p>Não ativa e não envia escala.</p></div>
+    <div class="error"><strong>Recusa do termo</strong><p>Persiste recusa e bloqueia fluxos futuros.</p></div>
+    <div class="error"><strong>77Gestão fora</strong><p>Registra falha, não confirma estado crítico e informa indisponibilidade.</p></div>
+    <div class="error"><strong>Falha provider</strong><p>Se Z-API/Meta falhar, não marca envio como concluído.</p></div>
+  </div>
+
+  <div class="detail-grid" aria-label="Contrato operacional e máquina de estados">
+    <section class="detail">
+      <h3>Ações que disparam POST para 77Gestão</h3>
+      <table>
+        <thead>
+          <tr><th>Ação</th><th>Endpoint</th><th>Status enviado</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Backend enviou escala ao cooperado com sucesso pelo provider</td><td><code>POST /bookings/{booking_id}/schedule-response</code></td><td><code>sent</code></td></tr>
+          <tr><td>Cooperado clicou Confirmar</td><td><code>POST /bookings/{booking_id}/schedule-response</code></td><td><code>confirmed</code></td></tr>
+          <tr><td>Cooperado clicou Cancelar</td><td><code>POST /bookings/{booking_id}/schedule-response</code></td><td><code>declined</code></td></tr>
+          <tr><td>Cooperado confirmou chegada e localização/check-in foi recebido</td><td><code>POST /appointments/{appointment_id}/status</code></td><td><code>checked_in</code></td></tr>
+          <tr><td>Operação encerrou o atendimento do appointment</td><td><code>POST /appointments/{appointment_id}/status</code></td><td><code>checked_out</code></td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="detail">
+      <h3>Máquina de estados do onboarding</h3>
+      <div class="state-list">
+        <div class="state"><strong><code>not_started</code></strong><p>Estado inicial. Se cooperado mandar “ativar”, valida telefone na 77Gestão. Se permitido, envia pedido para salvar contato e termo.</p></div>
+        <div class="state"><strong><code>terms_sent</code></strong><p>Termo enviado e aguardando botão. Se iniciar de novo, reenviar orientação curta e manter aguardando aceite, sem duplicar cadastro.</p></div>
+        <div class="state"><strong><code>accepted</code></strong><p>Cooperado ativado. Se iniciar de novo, responder que já está ativo e seguir para consulta/envio de escala quando houver escala elegível.</p></div>
+        <div class="state"><strong><code>rejected</code></strong><p>Termo recusado. Se iniciar de novo, informar que há recusa registrada e oferecer reenvio do termo apenas se a regra operacional permitir nova tentativa.</p></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="detail-grid" aria-label="Eventos sem sincronização externa">
+    <section class="detail">
+      <h3>Eventos somente locais</h3>
+      <table>
+        <thead>
+          <tr><th>Evento</th><th>Persistência</th><th>Sync 77Gestão</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>late_15</code>, <code>late_30</code>, <code>late_60</code></td><td>Banco local: telefone, appointment, atraso, timestamp BR e histórico.</td><td>Não envia POST.</td></tr>
+          <tr><td><code>not_going</code> + motivo</td><td>Banco local: telefone, appointment, motivo, observação, timestamp BR e histórico.</td><td>Não envia POST.</td></tr>
+          <tr><td>Reagendamento</td><td>Fora do fluxo atual até existir contrato específico; não aparece como botão operacional.</td><td>Não envia POST.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="detail">
+      <h3>Reentrada do cooperado</h3>
+      <table>
+        <thead>
+          <tr><th>Estado atual</th><th>Ao mandar “ativar” novamente</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>not_started</code></td><td>Validar na 77Gestão e iniciar onboarding.</td></tr>
+          <tr><td><code>terms_sent</code></td><td>Relembrar que o termo está pendente e reenviar botões, sem criar duplicidade.</td></tr>
+          <tr><td><code>accepted</code></td><td>Responder que já está ativo; permitir fluxo de escala/check-in.</td></tr>
+          <tr><td><code>rejected</code></td><td>Manter bloqueado; reabrir termo só com regra explícita.</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </div>
+</div>
