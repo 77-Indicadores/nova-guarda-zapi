@@ -663,7 +663,11 @@ def seed_test_booking_and_send(phone: str, client_name: str = "") -> dict[str, A
         "type": "appointment",
     }
     client = Gestao77Client.from_env()
-    result = client.create_appointment(payload)
+    try:
+        result = client.create_appointment(payload)
+    except (RuntimeError, requests.RequestException) as exc:
+        save_sync_event("cooperator", phone, "teste_assistido:seed_booking_real", False, payload, error=str(exc))
+        raise
     appointment = result.get("appointment", result)
     appointment_id = str(appointment.get("id") or "").strip()
     booking_info = appointment.get("booking") or {}

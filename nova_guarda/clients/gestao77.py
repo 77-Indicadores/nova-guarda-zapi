@@ -4,6 +4,20 @@ from typing import Any
 import requests
 
 
+def _raise_with_body(response: requests.Response) -> None:
+    """Como o raise_for_status() padrão não inclui o corpo da resposta, os
+    erros de validação da 77Gestão (400/422 com detalhes em JSON) ficavam
+    invisíveis nos logs e em Registros. Anexa o corpo (truncado) na mensagem
+    para dar visibilidade real do motivo da rejeição."""
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        body = (response.text or "").strip()
+        if body:
+            raise requests.HTTPError(f"{exc} | resposta: {body[:500]}", response=response) from exc
+        raise
+
+
 class Gestao77Client:
     def __init__(self, base_url: str | None = None, token: str | None = None) -> None:
         self.base_url = (base_url or os.getenv("GESTAO77_BASE_URL", "https://app.77gestao.com.br/api/v1")).rstrip("/")
@@ -111,7 +125,7 @@ class Gestao77Client:
             },
             timeout=30,
         )
-        response.raise_for_status()
+        _raise_with_body(response)
         return response.json()
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -130,5 +144,5 @@ class Gestao77Client:
             json=payload,
             timeout=30,
         )
-        response.raise_for_status()
+        _raise_with_body(response)
         return response.json()
