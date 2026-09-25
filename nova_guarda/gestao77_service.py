@@ -3,6 +3,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import requests
+
 from nova_guarda.clients import Gestao77Client
 from nova_guarda.config import GESTAO77_TEST_CUSTOMER_ID, GESTAO77_TEST_SERVICE_ID
 from nova_guarda.flows import agenda_status_label
@@ -100,6 +102,19 @@ def mark_appointment_checked_in(appointment_id: int | str, address: str = "") ->
 
 def mark_appointment_checked_out(appointment_id: int | str, address: str = "") -> dict[str, Any]:
     return update_appointment_status(appointment_id, "checked_out", address)
+
+
+def _safe_gestao77_sync(func, *args, **kwargs) -> dict[str, Any]:
+    """Executa uma sincronização de status de volta para a 77Gestão sem deixar
+    uma falha (endpoint/payload ainda não confirmado contra a API real, fora
+    do ar, etc.) quebrar o fluxo local do cooperado, que já avançou antes
+    dessa chamada. A falha já fica registrada em Registros via save_sync_event
+    dentro da própria função de sync (que ainda propaga a exceção lá), então
+    aqui só evitamos que ela suba para quem depende do fluxo de WhatsApp."""
+    try:
+        return func(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 - falha de integração não deve travar o fluxo local
+        return {"ok": False, "error": str(exc)}
 
 
 def update_booking_schedule_response(booking_id: int | str, status: str) -> dict[str, Any]:
@@ -286,9 +301,9 @@ def sync_booking_response(booking_id: int | str, target_status: str) -> dict[str
         }
 
     if target_status == "confirmed":
-        response = mark_booking_confirmed(booking_id)
+        response = _safe_gestao77_sync(mark_booking_confirmed, booking_id)
     elif target_status == "declined":
-        response = mark_booking_declined(booking_id)
+        response = _safe_gestao77_sync(mark_booking_declined, booking_id)
     else:
         raise ValueError(f"Status de escala inválido: {target_status}")
 
@@ -383,7 +398,7 @@ def sync_appointment_checkin(appointment_id: int | str, address: str = "", event
     changed, appointment = transition_appointment_checkin(appointment_id, event_id)
     if not changed and appointment.get("gestao77_status") in {"checked_in", "checked_out"}:
         return {"appointment_id": str(appointment_id), "status": "checked_in", "idempotent": True, "response": None}
-    response = mark_appointment_checked_in(appointment_id, address)
+    response = _safe_gestao77_sync(mark_appointment_checked_in, appointment_id, address)
     return {"appointment_id": str(appointment_id), "status": "checked_in", "idempotent": not changed, "response": response}
 
 
@@ -391,7 +406,7 @@ def sync_appointment_checkout(appointment_id: int | str, address: str = "", even
     changed, appointment = transition_appointment_checkout(appointment_id, event_id)
     if not changed and appointment.get("gestao77_status") == "checked_out":
         return {"appointment_id": str(appointment_id), "status": "checked_out", "idempotent": True, "response": None}
-    response = mark_appointment_checked_out(appointment_id, address)
+    response = _safe_gestao77_sync(mark_appointment_checked_out, appointment_id, address)
     return {"appointment_id": str(appointment_id), "status": "checked_out", "idempotent": not changed, "response": response}
 
 
@@ -675,7 +690,18 @@ def seed_test_booking_and_send(phone: str, client_name: str = "") -> dict[str, A
     )
     save_sync_event("booking", booking_id, "teste_assistido:seed_booking_real", True, payload, result)
 
-    send_result = send_booking_to_partner(booking_id, phone)
+    try:
+        send_result = send_booking_to_partner(booking_id, phone)
+    except (RuntimeError, requests.RequestException) as exc:
+        # A escala já foi criada na 77Gestão e o storage local acima já
+        # associou o telefone a ela. Se o WhatsApp já tiver sido enviado (só a
+        # sincronização de volta pro 77Gestão falhou), não é uma falha do
+        # teste assistido: o cooperado já recebeu a mensagem normalmente.
+        booking = get_booking(booking_id)
+        if booking and booking.get("local_status") == "sent":
+            send_result = {"booking_id": str(booking_id), "phone": phone, "status": "sent", "gestao77_sync_error": str(exc)}
+        else:
+            raise
     return {"booking_id": booking_id, "appointment_id": appointment_id, "send_result": send_result}
 
 

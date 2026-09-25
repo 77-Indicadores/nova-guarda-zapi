@@ -210,6 +210,14 @@ class BookingFlowTest(unittest.TestCase):
         self.assertEqual(booking["gestao77_status"], "sent")
         self.assertEqual(self.failed_sync_count("confirmed"), 1)
 
+        # Mesmo com a sincronização de volta pro 77Gestão falhando, o
+        # cooperado já teve a confirmação registrada localmente e não deve
+        # receber a mensagem de erro genérica: recebe a confirmação normal.
+        events = self.storage.list_conversation_events(limit=5)
+        last_reply = events[0]["payload"]["text"]["message"]
+        self.assertNotIn("Não consegui registrar", last_reply)
+        self.assertNotEqual(events[0]["payload"].get("status"), "booking_sync_error")
+
     def test_decline_generates_declined(self):
         self.accept_cooperator()
         self.create_booking()

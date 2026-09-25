@@ -113,6 +113,47 @@ class RealGestao77SeedTest(unittest.TestCase):
         self.assertEqual(booking["local_status"], "sent")
         self.assertEqual(booking["appointment_id"], "23")
 
+    def test_seed_booking_survives_gestao77_schedule_response_failure(self):
+        """Reproduz o bug relatado: a 77Gestão cria o appointment normalmente,
+        mas o endpoint de sincronização de status de volta (schedule-response)
+        falha (ex.: 422, ainda não validado contra a API real). A escala já
+        foi criada e a mensagem de WhatsApp já foi enviada nesse ponto, então
+        isso não pode aparecer como falha do teste assistido para quem clicou
+        em "Rodar teste completo"."""
+        from nova_guarda.gestao77_service import seed_test_booking_and_send
+
+        self.storage.upsert_cooperator(
+            self.phone,
+            "accepted",
+            {"id": 603, "name": "TESTE Codex Cooperado", "type": "cooperado", "active": 1},
+        )
+
+        fake_client = Mock()
+        fake_client.create_appointment.return_value = {
+            "status": "success",
+            "appointment": {
+                "id": 23,
+                "partner_id": 603,
+                "booking_id": 4,
+                "booking": {"id": 4, "status": "awaiting_approval"},
+            },
+        }
+        fake_client.update_booking_schedule_response.side_effect = RuntimeError(
+            "422 Client Error: Unprocessable Content for url: "
+            "https://app.77gestao.com.br/api/v1/bookings/4/schedule-response"
+        )
+
+        with patch("nova_guarda.gestao77_service.Gestao77Client.from_env", return_value=fake_client):
+            result = seed_test_booking_and_send(self.phone, "Cliente Teste")
+
+        self.assertEqual(result["booking_id"], "4")
+        self.assertEqual(result["appointment_id"], "23")
+        self.assertIn("gestao77_sync_error", result["send_result"])
+
+        booking = self.storage.get_booking("4")
+        self.assertEqual(booking["local_status"], "sent")
+        self.assertTrue(booking["sent_at"])
+
     def test_seed_booking_without_partner_id_is_rejected(self):
         from nova_guarda.gestao77_service import seed_test_booking_and_send
 
