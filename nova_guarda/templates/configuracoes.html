@@ -85,4 +85,28 @@
 
   <button class="primary" type="submit">Salvar configurações</button>
 </form>
+
+<div class="card">
+  <p class="card-title">Ações de teste assistido</p>
+  <p class="card-sub">
+    Cria dados de teste localmente (a 77Gestão não tem endpoint de criação de cooperado/escala), mas envia a
+    mensagem pelo WhatsApp de verdade. Use um telefone real para receber e responder as mensagens.
+    Pode ser repetido quantas vezes quiser, com o mesmo telefone ou telefones diferentes — cada clique em
+    "Criar escala" gera uma escala nova.
+  </p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px">
+    <form method="post" action="{{ url_for('teste_assistido_cooperado') }}" style="display:flex;flex-direction:column;gap:10px">
+      <p style="margin:0;font-weight:700">1. Criar cooperado de teste (já aceito)</p>
+      <label style="display:flex;flex-direction:column;gap:6px">Telefone (com DDI+DDD)<input type="text" name="phone" placeholder="5513999999999" value="{{ cfg.test_phone }}" required></label>
+      <label style="display:flex;flex-direction:column;gap:6px">Nome<input type="text" name="client_name" value="{{ cfg.test_partner_name }}"></label>
+      <button type="submit">Criar cooperado ativo</button>
+    </form>
+    <form method="post" action="{{ url_for('teste_assistido_escala') }}" style="display:flex;flex-direction:column;gap:10px">
+      <p style="margin:0;font-weight:700">2. Criar escala de teste e enviar agora</p>
+      <label style="display:flex;flex-direction:column;gap:6px">Telefone (com DDI+DDD)<input type="text" name="phone" placeholder="5513999999999" value="{{ cfg.test_phone }}" required></label>
+      <label style="display:flex;flex-direction:column;gap:6px">Nome do cliente<input type="text" name="client_name" value="{{ cfg.test_partner_name }}"></label>
+      <button class="primary" type="submit">Criar escala e enviar</button>
+    </form>
+  </div>
+</div>
 {% endblock %}

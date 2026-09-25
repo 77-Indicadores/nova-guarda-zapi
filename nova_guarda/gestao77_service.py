@@ -1,8 +1,10 @@
 import os
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from nova_guarda.clients import Gestao77Client
+from nova_guarda.config import GESTAO77_TEST_CUSTOMER_ID, GESTAO77_TEST_SERVICE_ID
 from nova_guarda.flows import agenda_status_label
 from nova_guarda.flows import checkin_status_label
 from nova_guarda.messages import build_agenda_message, build_checkin2_message, build_checkin_message, normalize_phone
@@ -14,6 +16,7 @@ from nova_guarda.storage import (
     cooperator_has_accepted_terms,
     get_appointment,
     get_booking,
+    get_cooperator,
     get_latest_appointment_by_phone,
     get_latest_booking_by_phone,
     list_pending_appointment_syncs,
@@ -32,6 +35,7 @@ from nova_guarda.storage import (
     update_booking_local_status,
     upsert_appointment,
     upsert_booking,
+    upsert_cooperator,
 )
 from nova_guarda.timezone import BR_TZ, br_now
 
@@ -523,7 +527,148 @@ def select_today_appointment(appointments: list[dict[str, Any]]) -> dict[str, An
         if starts_at.date() == today:
             return appointment
     return None
-    list_pending_appointment_syncs,
-    list_pending_booking_syncs,
-    mark_appointment_late,
-    mark_appointment_no_show,
+
+
+def _phone_to_partner_phone_entry(phone: str) -> dict[str, Any]:
+    national = phone[2:] if phone.startswith("55") and len(phone) > 10 else phone
+    return {"country_code": "+55", "number": int(national), "type": 3}
+
+
+def seed_test_cooperator(phone: str, name: str = "") -> dict[str, Any]:
+    """Cria um cooperado pronto para receber escala, permitindo repetir o teste
+    com vários telefones diferentes. Em modo fake, cria só localmente. Fora do
+    modo fake, cria de verdade na 77Gestão via POST /partners (payload
+    confirmado manualmente contra a API real) e espelha o retorno localmente."""
+    phone = normalize_phone(phone)
+    if not phone:
+        raise ValueError("Informe um telefone para criar o cooperado de teste.")
+
+    partner_name = name.strip() or "Cooperado Teste"
+
+    if fake_gestao77_enabled():
+        partner = {
+            "id": f"teste-{phone}",
+            "name": partner_name,
+            "type": "cooperado",
+            "active": 1,
+        }
+        cooperator = upsert_cooperator(phone, "accepted", partner, "teste_assistido:seed")
+        save_sync_event(
+            "cooperator",
+            phone,
+            "teste_assistido:seed_cooperator",
+            True,
+            {"phone": phone, "name": partner_name},
+        )
+        return cooperator
+
+    payload = {
+        "type": "cooperado",
+        "person_type": 1,
+        "name": partner_name,
+        "nrlp": f"TESTE{uuid.uuid4().hex[:10].upper()}",
+        "active": 1,
+        "email": f"teste.{uuid.uuid4().hex[:8]}@novaguarda.local",
+        "phones": [_phone_to_partner_phone_entry(phone)],
+        "addresses": [],
+        "cooperative_member_settings": {
+            "service_id": int(GESTAO77_TEST_SERVICE_ID),
+            "cost": 2600,
+            "monthly_hours": 198,
+        },
+    }
+    client = Gestao77Client.from_env()
+    result = client.create_partner(payload)
+    partner = result.get("partner", result)
+    cooperator = upsert_cooperator(phone, "accepted", partner, "teste_assistido:seed_real")
+    save_sync_event("cooperator", phone, "teste_assistido:seed_cooperator_real", True, payload, result)
+    return cooperator
+
+
+def seed_test_booking_and_send(phone: str, client_name: str = "") -> dict[str, Any]:
+    """Cria uma escala + appointment de teste e já dispara a mensagem de agenda
+    pelo WhatsApp configurado (real ou fake, conforme DEV_FAKE_ZAPI/provider).
+    Em modo fake, monta tudo localmente com IDs sintéticos. Fora do modo fake,
+    cria o appointment de verdade na 77Gestão via POST /appointments (que cria/
+    associa o booking automaticamente), usando o cliente e serviço de teste já
+    confirmados como válidos na API real."""
+    phone = normalize_phone(phone)
+    if not phone:
+        raise ValueError("Informe um telefone para gerar a escala de teste.")
+    if not cooperator_has_accepted_terms(phone):
+        raise PermissionError("Crie o cooperado de teste (aceito) antes de gerar uma escala.")
+
+    if fake_gestao77_enabled():
+        suffix = uuid.uuid4().hex[:8]
+        booking_id = f"teste-{suffix}"
+        appointment_id = f"teste-apt-{suffix}"
+        start_at = br_now().strftime("%Y-%m-%dT%H:%M:%S")
+
+        upsert_booking(
+            {
+                "id": f"teste-{phone}",
+                "name": client_name.strip() or "Cooperado Teste",
+                "booking_id": booking_id,
+                "schedule_status": "awaiting_approval",
+                "today_appointment_id": appointment_id,
+                "appointments": [
+                    {
+                        "id": appointment_id,
+                        "start_at": start_at,
+                        "customer": {"name": client_name.strip() or "Cliente Teste"},
+                    }
+                ],
+            },
+            phone=phone,
+        )
+        send_result = send_booking_to_partner(booking_id, phone)
+        return {"booking_id": booking_id, "appointment_id": appointment_id, "send_result": send_result}
+
+    cooperator = get_cooperator(phone)
+    partner_id = str((cooperator or {}).get("partner_id") or "").strip()
+    if not partner_id:
+        raise RuntimeError("Cooperado sem partner_id da 77Gestão. Recrie o cooperado de teste.")
+
+    start = br_now().astimezone(timezone.utc)
+    end = start + timedelta(hours=9)
+    start_at = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_at = end.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    payload = {
+        "partner_id": int(partner_id),
+        "customer_id": int(GESTAO77_TEST_CUSTOMER_ID),
+        "start_at": start_at,
+        "end_at": end_at,
+        "notes": f"Teste assistido Nova Guarda - {client_name.strip() or 'Cliente Teste'}",
+        "type": "appointment",
+    }
+    client = Gestao77Client.from_env()
+    result = client.create_appointment(payload)
+    appointment = result.get("appointment", result)
+    appointment_id = str(appointment.get("id") or "").strip()
+    booking_info = appointment.get("booking") or {}
+    booking_id = str(booking_info.get("id") or "").strip()
+    if not appointment_id or not booking_id:
+        raise RuntimeError("77Gestão não retornou appointment_id/booking_id ao criar o appointment.")
+
+    upsert_booking(
+        {
+            "id": partner_id,
+            "name": client_name.strip() or "Cooperado Teste",
+            "booking_id": booking_id,
+            "schedule_status": booking_info.get("status") or "awaiting_approval",
+            "today_appointment_id": appointment_id,
+            "appointments": [
+                {
+                    "id": appointment_id,
+                    "start_at": start_at,
+                    "customer": {"name": client_name.strip() or "Cliente Teste"},
+                }
+            ],
+        },
+        phone=phone,
+    )
+    save_sync_event("booking", booking_id, "teste_assistido:seed_booking_real", True, payload, result)
+
+    send_result = send_booking_to_partner(booking_id, phone)
+    return {"booking_id": booking_id, "appointment_id": appointment_id, "send_result": send_result}

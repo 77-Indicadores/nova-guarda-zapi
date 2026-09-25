@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from collections.abc import Iterator
 from typing import Any
 
-from nova_guarda.config import DATABASE_PATH
+from nova_guarda.config import DATABASE_PATH, DATABASE_URL
 from nova_guarda.timezone import br_iso_timestamp
 
 
@@ -12,24 +12,86 @@ def timestamp() -> str:
     return br_iso_timestamp()
 
 
+def using_postgres() -> bool:
+    return DATABASE_URL.startswith(("postgresql://", "postgres://"))
+
+
+def sql(query: str) -> str:
+    """Traduz placeholders `?` (estilo sqlite3) para `%s` (estilo psycopg) quando necessário."""
+    return query.replace("?", "%s") if using_postgres() else query
+
+
+class _PostgresConnection:
+    """Encapsula uma conexão psycopg para aceitar o mesmo estilo de chamada
+    (`conn.execute(query_com_?, params)`) usado em todo este módulo para SQLite."""
+
+    def __init__(self, conn: Any) -> None:
+        self._conn = conn
+
+    def execute(self, query: str, params: tuple[Any, ...] = ()):
+        return self._conn.execute(sql(query), params)
+
+    def executescript(self, script: str) -> None:
+        for statement in script.split(";"):
+            if statement.strip():
+                self._conn.execute(statement)
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+
+    def close(self) -> None:
+        self._conn.close()
+
+
 @contextmanager
-def connect() -> Iterator[sqlite3.Connection]:
-    conn = sqlite3.connect(DATABASE_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+def connect() -> Iterator[Any]:
+    if using_postgres():
+        import psycopg
+        from psycopg.rows import dict_row
+
+        raw_conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        conn = _PostgresConnection(raw_conn)
+        try:
+            yield conn
+            raw_conn.commit()
+        except Exception:
+            raw_conn.rollback()
+            raise
+        finally:
+            raw_conn.close()
+    else:
+        conn = sqlite3.connect(DATABASE_PATH)
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+
+def insert_returning_id(conn: Any, query: str, params: tuple[Any, ...]) -> int:
+    """Executa um INSERT e retorna o id gerado, nos dois dialetos suportados."""
+    if using_postgres():
+        cursor = conn.execute(query.rstrip().rstrip(";") + " RETURNING id", params)
+        return cursor.fetchone()["id"]
+    cursor = conn.execute(query, params)
+    return cursor.lastrowid
 
 
 def init_db() -> None:
+    # id_pk é a única diferença de dialeto no schema: as demais colunas usam
+    # tipos (TEXT/INTEGER) e sintaxe (ON CONFLICT ... DO UPDATE, COALESCE,
+    # NULLIF) suportados de forma idêntica por SQLite e Postgres.
+    id_pk = "BIGSERIAL PRIMARY KEY" if using_postgres() else "INTEGER PRIMARY KEY AUTOINCREMENT"
     with connect() as conn:
         conn.executescript(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS bookings (
                 booking_id TEXT PRIMARY KEY,
                 partner_id TEXT,
@@ -50,7 +112,7 @@ def init_db() -> None:
             );
 
             CREATE TABLE IF NOT EXISTS sync_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {id_pk},
                 entity_type TEXT NOT NULL,
                 entity_id TEXT NOT NULL,
                 action TEXT NOT NULL,
@@ -108,7 +170,7 @@ def init_db() -> None:
             );
 
             CREATE TABLE IF NOT EXISTS poller_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {id_pk},
                 status TEXT NOT NULL,
                 started_at TEXT NOT NULL,
                 finished_at TEXT,
@@ -117,7 +179,7 @@ def init_db() -> None:
             );
 
             CREATE TABLE IF NOT EXISTS conversation_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {id_pk},
                 received_at TEXT NOT NULL,
                 event_type TEXT,
                 phone TEXT,
@@ -167,7 +229,10 @@ SETTING_DEFAULTS = {
 EDITABLE_SETTINGS = set(SETTING_DEFAULTS)
 
 
-def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+def ensure_column(conn: Any, table: str, column: str, definition: str) -> None:
+    if using_postgres():
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {definition}")
+        return
     columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
     if column not in columns:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
@@ -834,14 +899,15 @@ def save_conversation_event(event: dict[str, Any]) -> dict[str, Any]:
     event_type = str(payload.get("type") or "")
     phone = str(payload.get("phone") or "")
     with connect() as conn:
-        cursor = conn.execute(
+        new_id = insert_returning_id(
+            conn,
             """
             INSERT INTO conversation_events (received_at, event_type, phone, payload_json)
             VALUES (?, ?, ?, ?)
             """,
             (received_at, event_type, phone, json.dumps(payload, ensure_ascii=False, default=str)),
         )
-        row = conn.execute("SELECT * FROM conversation_events WHERE id = ?", (cursor.lastrowid,)).fetchone()
+        row = conn.execute("SELECT * FROM conversation_events WHERE id = ?", (new_id,)).fetchone()
     return row_to_conversation_event(row)
 
 
@@ -901,14 +967,14 @@ def save_poller_run(status: str, payload: dict[str, Any], error: str = "", start
     started = started_at or timestamp()
     finished = timestamp()
     with connect() as conn:
-        cursor = conn.execute(
+        run_id = insert_returning_id(
+            conn,
             """
             INSERT INTO poller_runs (status, started_at, finished_at, payload_json, error)
             VALUES (?, ?, ?, ?, ?)
             """,
             (status, started, finished, json.dumps(payload, ensure_ascii=False, default=str), error),
         )
-        run_id = cursor.lastrowid
         row = conn.execute("SELECT * FROM poller_runs WHERE id = ?", (run_id,)).fetchone()
     return row_to_poller_run(row)
 
@@ -940,25 +1006,25 @@ def extract_phone(member: dict[str, Any]) -> str:
     return ""
 
 
-def row_to_booking(row: sqlite3.Row) -> dict[str, Any]:
+def row_to_booking(row: Any) -> dict[str, Any]:
     data = dict(row)
     data["payload"] = json.loads(data.pop("payload_json") or "{}")
     return data
 
 
-def row_to_cooperator(row: sqlite3.Row) -> dict[str, Any]:
+def row_to_cooperator(row: Any) -> dict[str, Any]:
     data = dict(row)
     data["partner_payload"] = json.loads(data.pop("partner_payload_json") or "{}")
     return data
 
 
-def row_to_appointment(row: sqlite3.Row) -> dict[str, Any]:
+def row_to_appointment(row: Any) -> dict[str, Any]:
     data = dict(row)
     data["payload"] = json.loads(data.pop("payload_json") or "{}")
     return data
 
 
-def row_to_sync_event(row: sqlite3.Row) -> dict[str, Any]:
+def row_to_sync_event(row: Any) -> dict[str, Any]:
     data = dict(row)
     data["request"] = json.loads(data.pop("request_json") or "{}")
     response_json = data.pop("response_json")
@@ -966,13 +1032,13 @@ def row_to_sync_event(row: sqlite3.Row) -> dict[str, Any]:
     return data
 
 
-def row_to_poller_run(row: sqlite3.Row) -> dict[str, Any]:
+def row_to_poller_run(row: Any) -> dict[str, Any]:
     data = dict(row)
     data["payload"] = json.loads(data.pop("payload_json") or "{}")
     return data
 
 
-def row_to_conversation_event(row: sqlite3.Row) -> dict[str, Any]:
+def row_to_conversation_event(row: Any) -> dict[str, Any]:
     data = dict(row)
     data["payload"] = json.loads(data.pop("payload_json") or "{}")
     return data

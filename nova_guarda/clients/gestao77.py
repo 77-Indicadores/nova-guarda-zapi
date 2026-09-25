@@ -88,6 +88,12 @@ class Gestao77Client:
         query = f"?type={partner_type}&skipLoader=1" if partner_type else "?skipLoader=1"
         return self._get(f"/partners{query}")
 
+    def create_partner(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/partners", payload)
+
+    def create_appointment(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/appointments", payload)
+
     def list_appointments_by_booking(self, booking_id: str | int) -> dict[str, Any]:
         return self._get(f"/appointments?booking_id={booking_id}&skipLoader=1")
 

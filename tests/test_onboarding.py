@@ -19,6 +19,8 @@ class OnboardingFlowTest(unittest.TestCase):
 
         config.DATABASE_PATH = Path(self.database.name)
         storage.DATABASE_PATH = Path(self.database.name)
+        config.DATABASE_URL = ""
+        storage.DATABASE_URL = ""
         config.DEV_FAKE_ZAPI = True
         services.DEV_FAKE_ZAPI = True
 
@@ -29,6 +31,7 @@ class OnboardingFlowTest(unittest.TestCase):
         TERMS_STATE.clear()
         self.app = create_app()
         self.client = self.app.test_client()
+        self.client.post("/login", data={"username": "admin", "password": "admin"})
 
     def tearDown(self) -> None:
         Path(self.database.name).unlink(missing_ok=True)

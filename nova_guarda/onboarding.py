@@ -1,7 +1,7 @@
-import os
 from typing import Any
 
 from nova_guarda.clients import Gestao77Client
+from nova_guarda.gestao77_service import fake_gestao77_enabled
 from nova_guarda.messages import build_terms_buttons_message, build_terms_message, normalize_phone
 from nova_guarda.services import append_fake_sent_message, send_terms_document, send_zapi_terms_buttons, send_zapi_text
 from nova_guarda.storage import (
@@ -28,10 +28,6 @@ ONBOARDING_STATUSES = {"not_started", "terms_sent", "accepted", "rejected"}
 def is_activation_command(text: str) -> bool:
     normalized = " ".join(text.strip().lower().split())
     return normalized in ACTIVATION_COMMANDS
-
-
-def fake_gestao77_enabled() -> bool:
-    return os.getenv("DEV_FAKE_GESTAO77", "false").strip().lower() in {"1", "true", "yes", "sim"}
 
 
 def handle_activation_request(phone: str, text: str) -> dict[str, Any]:

@@ -24,6 +24,8 @@ class CheckinCheckoutFlowTest(unittest.TestCase):
 
         config.DATABASE_PATH = Path(self.database.name)
         storage.DATABASE_PATH = Path(self.database.name)
+        config.DATABASE_URL = ""
+        storage.DATABASE_URL = ""
         config.DEV_FAKE_ZAPI = True
         services.DEV_FAKE_ZAPI = True
 
@@ -34,6 +36,7 @@ class CheckinCheckoutFlowTest(unittest.TestCase):
         self.storage = storage
         self.app = create_app()
         self.client = self.app.test_client()
+        self.client.post("/login", data={"username": "admin", "password": "admin"})
         self.phone = "5513999199293"
         self.booking_id = "booking-1"
         self.appointment_id = "appointment-1"

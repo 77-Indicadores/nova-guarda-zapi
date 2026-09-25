@@ -23,6 +23,8 @@ class AutomationTest(unittest.TestCase):
 
         config.DATABASE_PATH = Path(self.database.name)
         storage.DATABASE_PATH = Path(self.database.name)
+        config.DATABASE_URL = ""
+        storage.DATABASE_URL = ""
         config.DEV_FAKE_ZAPI = True
         services.DEV_FAKE_ZAPI = True
 

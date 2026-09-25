@@ -1,11 +1,14 @@
+import hashlib
+import hmac
 import logging
 import os
 import threading
 import uuid
+import warnings
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, flash, jsonify, redirect, render_template, render_template_string, request, session, url_for
+from flask import Flask, abort, flash, jsonify, redirect, render_template, render_template_string, request, session, url_for
 from werkzeug.security import check_password_hash
 
 load_dotenv(encoding="utf-8-sig")
@@ -19,6 +22,8 @@ from nova_guarda.gestao77_service import (
     retry_pending_gestao77_syncs,
     mark_appointment_checked_out,
     mark_booking_sent,
+    seed_test_booking_and_send,
+    seed_test_cooperator,
     send_booking_to_partner,
     send_checkin_to_partner,
     send_checkout_to_partner,
@@ -36,6 +41,7 @@ from nova_guarda.onboarding import (
 from nova_guarda.config import (
     PORT,
     PUBLIC_BASE_URL,
+    WHATSAPP_APP_SECRET,
     WHATSAPP_VERIFY_TOKEN,
     WEBHOOK_PATH,
 )
@@ -76,6 +82,8 @@ PUBLIC_ENDPOINTS = {
     "webhook",
     "verify_webhook",
     "static",
+    "location_checkin_page",
+    "receive_location_checkin",
 }
 
 _POLLER_THREAD: threading.Thread | None = None
@@ -636,7 +644,15 @@ def ensure_poller_started() -> None:
 
 def create_app() -> Flask:
     app = Flask(__name__)
-    app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-only-change-me")
+    secret_key = os.getenv("FLASK_SECRET_KEY", "")
+    if not secret_key:
+        warnings.warn(
+            "FLASK_SECRET_KEY não configurada: usando uma chave insegura de desenvolvimento. "
+            "Defina FLASK_SECRET_KEY antes de rodar em produção.",
+            RuntimeWarning,
+        )
+        secret_key = "dev-only-change-me"
+    app.secret_key = secret_key
     app.jinja_env.filters["brt"] = brt
     app.jinja_env.filters["status_label"] = status_label
     init_db()
@@ -647,12 +663,15 @@ def create_app() -> Flask:
     def require_login():
         if request.endpoint in PUBLIC_ENDPOINTS:
             return None
-        if request.path.startswith(("/api/", "/webhook", "/health", "/checkin-location/")):
-            return None
-        if request.path == "/dev/simulate-whatsapp" and services.DEV_FAKE_ZAPI:
+        # DEV_FAKE_ZAPI só deve ficar habilitada em dev/homologação; com ela
+        # ligada este endpoint fica público para permitir simular mensagens
+        # sem autenticação. Nunca defina DEV_FAKE_ZAPI=true em produção.
+        if request.endpoint == "simulate_whatsapp" and services.DEV_FAKE_ZAPI:
             return None
         if session.get("authenticated"):
             return None
+        if request.path.startswith("/api/"):
+            return jsonify({"ok": False, "error": "Não autenticado."}), 401
         return redirect(url_for("login", next=request.path))
 
     @app.get("/login")
@@ -780,6 +799,34 @@ def create_app() -> Flask:
         flash("Configurações salvas com sucesso.")
         return redirect(url_for("configuracoes"))
 
+    @app.post("/teste-assistido/cooperado")
+    def teste_assistido_cooperado():
+        phone = normalize_phone(request.form.get("phone", ""))
+        name = request.form.get("client_name", "")
+        try:
+            cooperator = seed_test_cooperator(phone, name)
+        except ValueError as exc:
+            flash(str(exc))
+            return redirect(url_for("configuracoes"))
+        flash(f"Cooperado de teste pronto (aceito): {cooperator.get('partner_name') or name or phone} · {phone}.")
+        return redirect(url_for("configuracoes"))
+
+    @app.post("/teste-assistido/escala")
+    def teste_assistido_escala():
+        phone = normalize_phone(request.form.get("phone", ""))
+        name = request.form.get("client_name", "")
+        try:
+            result = seed_test_booking_and_send(phone, name)
+        except (PermissionError, ValueError) as exc:
+            flash(str(exc))
+            return redirect(url_for("configuracoes"))
+        except (RuntimeError, requests.RequestException) as exc:
+            logger.exception("Erro ao enviar escala de teste: %s", exc)
+            flash(f"Falha ao enviar escala de teste: {exc}")
+            return redirect(url_for("configuracoes"))
+        flash(f"Escala de teste {result['booking_id']} criada e enviada para {phone}.")
+        return redirect(url_for("configuracoes"))
+
     @app.get("/policy")
     def policy():
         return render_template("policy.html")
@@ -790,6 +837,12 @@ def create_app() -> Flask:
 
     @app.post(WEBHOOK_PATH)
     def webhook():
+        if WHATSAPP_APP_SECRET:
+            signature = request.headers.get("X-Hub-Signature-256", "")
+            expected = "sha256=" + hmac.new(WHATSAPP_APP_SECRET.encode(), request.get_data(), hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(signature, expected):
+                abort(403)
+
         payload = request.get_json(silent=True)
 
         if payload is None:
