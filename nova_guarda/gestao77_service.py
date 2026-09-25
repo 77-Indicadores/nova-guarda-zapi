@@ -134,6 +134,13 @@ def update_appointment_status(appointment_id: int | str, status: str, address: s
 
 
 def fake_gestao77_enabled() -> bool:
+    try:
+        from nova_guarda.storage import get_setting
+
+        if get_setting("gestao77_mode").strip().lower() == "fake":
+            return True
+    except Exception:
+        pass
     return os.getenv("DEV_FAKE_GESTAO77", "false").strip().lower() in {"1", "true", "yes", "sim"}
 
 

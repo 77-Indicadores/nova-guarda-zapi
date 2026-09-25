@@ -100,6 +100,21 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS configuracoes (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS poller_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                payload_json TEXT NOT NULL,
+                error TEXT
+            );
             """
         )
         ensure_column(conn, "bookings", "provider", "TEXT")
@@ -123,6 +138,25 @@ def init_db() -> None:
         ensure_column(conn, "appointments", "no_show_reported_at", "TEXT")
         ensure_column(conn, "appointments", "checkin_synced_at", "TEXT")
         ensure_column(conn, "appointments", "checkout_synced_at", "TEXT")
+
+
+SETTING_DEFAULTS = {
+    "operation_mode": "production",
+    "active_provider": "",
+    "gestao77_mode": "real",
+    "test_phone": "",
+    "test_partner_name": "Cooperado Teste",
+    "test_booking_id": "test-booking-1",
+    "test_appointment_id": "test-appointment-1",
+    "automation_enabled": "0",
+    "poll_interval_minutes": "5",
+    "automation_send_limit": "25",
+    "auto_checkin_enabled": "1",
+    "checkin_lead_minutes": "120",
+    "checkout_after_minutes": "60",
+}
+
+EDITABLE_SETTINGS = set(SETTING_DEFAULTS)
 
 
 def ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
@@ -211,6 +245,20 @@ def list_bookings(status: str | None = None) -> list[dict[str, Any]]:
     query += " ORDER BY updated_at DESC"
     with connect() as conn:
         rows = conn.execute(query, params).fetchall()
+    return [row_to_booking(row) for row in rows]
+
+
+def list_bookings_for_checkin() -> list[dict[str, Any]]:
+    init_db()
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM bookings
+            WHERE local_status IN ('sent', 'confirmed')
+              AND COALESCE(appointment_id, '') != ''
+            ORDER BY updated_at ASC
+            """
+        ).fetchall()
     return [row_to_booking(row) for row in rows]
 
 
@@ -699,6 +747,143 @@ def cooperator_has_accepted_terms(phone: str) -> bool:
     return bool(cooperator and cooperator.get("onboarding_status") == "accepted")
 
 
+def get_setting(key: str) -> str:
+    init_db()
+    with connect() as conn:
+        row = conn.execute("SELECT value FROM configuracoes WHERE key = ?", (key,)).fetchone()
+    return str(row["value"]) if row else SETTING_DEFAULTS.get(key, "")
+
+
+def all_settings() -> dict[str, str]:
+    init_db()
+    settings = dict(SETTING_DEFAULTS)
+    with connect() as conn:
+        rows = conn.execute("SELECT key, value FROM configuracoes").fetchall()
+    for row in rows:
+        settings[row["key"]] = row["value"]
+    return settings
+
+
+def set_settings(updates: dict[str, str]) -> None:
+    init_db()
+    now = timestamp()
+    with connect() as conn:
+        for key, value in updates.items():
+            if key not in EDITABLE_SETTINGS:
+                continue
+            conn.execute(
+                """
+                INSERT INTO configuracoes (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (key, value, now),
+            )
+
+
+def list_cooperators(status: str | None = None) -> list[dict[str, Any]]:
+    init_db()
+    query = "SELECT * FROM cooperators"
+    params: tuple[Any, ...] = ()
+    if status:
+        query += " WHERE onboarding_status = ?"
+        params = (status,)
+    query += " ORDER BY updated_at DESC"
+    with connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [row_to_cooperator(row) for row in rows]
+
+
+def list_appointments(status: str | None = None) -> list[dict[str, Any]]:
+    init_db()
+    query = "SELECT * FROM appointments"
+    params: tuple[Any, ...] = ()
+    if status:
+        query += " WHERE local_status = ?"
+        params = (status,)
+    query += " ORDER BY updated_at DESC"
+    with connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [row_to_appointment(row) for row in rows]
+
+
+def list_sync_events(limit: int = 100) -> list[dict[str, Any]]:
+    init_db()
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM sync_events ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [row_to_sync_event(row) for row in rows]
+
+
+def dashboard_metrics() -> dict[str, Any]:
+    init_db()
+    with connect() as conn:
+        cooperators = conn.execute(
+            "SELECT onboarding_status status, COUNT(*) total FROM cooperators GROUP BY onboarding_status"
+        ).fetchall()
+        bookings = conn.execute(
+            "SELECT local_status status, COUNT(*) total FROM bookings GROUP BY local_status"
+        ).fetchall()
+        appointments = conn.execute(
+            "SELECT local_status status, COUNT(*) total FROM appointments GROUP BY local_status"
+        ).fetchall()
+        pending_booking_syncs = conn.execute(
+            """
+            SELECT COUNT(*) total FROM bookings
+            WHERE local_status IN ('sent', 'confirmed', 'declined')
+              AND COALESCE(gestao77_status, '') != local_status
+            """
+        ).fetchone()
+        pending_appointment_syncs = conn.execute(
+            """
+            SELECT COUNT(*) total FROM appointments
+            WHERE local_status IN ('checked_in', 'checked_out')
+              AND COALESCE(gestao77_status, '') != local_status
+            """
+        ).fetchone()
+        failed_syncs = conn.execute("SELECT COUNT(*) total FROM sync_events WHERE ok = 0").fetchone()
+        last_poller_run = conn.execute(
+            "SELECT * FROM poller_runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    return {
+        "cooperators": {row["status"]: row["total"] for row in cooperators},
+        "bookings": {row["status"]: row["total"] for row in bookings},
+        "appointments": {row["status"]: row["total"] for row in appointments},
+        "pending_syncs": (pending_booking_syncs["total"] if pending_booking_syncs else 0)
+        + (pending_appointment_syncs["total"] if pending_appointment_syncs else 0),
+        "failed_syncs": failed_syncs["total"] if failed_syncs else 0,
+        "last_poller_run": row_to_poller_run(last_poller_run) if last_poller_run else None,
+    }
+
+
+def save_poller_run(status: str, payload: dict[str, Any], error: str = "", started_at: str | None = None) -> dict[str, Any]:
+    init_db()
+    started = started_at or timestamp()
+    finished = timestamp()
+    with connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO poller_runs (status, started_at, finished_at, payload_json, error)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (status, started, finished, json.dumps(payload, ensure_ascii=False, default=str), error),
+        )
+        run_id = cursor.lastrowid
+        row = conn.execute("SELECT * FROM poller_runs WHERE id = ?", (run_id,)).fetchone()
+    return row_to_poller_run(row)
+
+
+def list_poller_runs(limit: int = 50) -> list[dict[str, Any]]:
+    init_db()
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM poller_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [row_to_poller_run(row) for row in rows]
+
+
 def extract_phone(member: dict[str, Any]) -> str:
     for key in ("phone", "mobile", "cellphone", "whatsapp", "telephone", "celular", "telefone"):
         value = member.get(key)
@@ -732,6 +917,20 @@ def row_to_cooperator(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def row_to_appointment(row: sqlite3.Row) -> dict[str, Any]:
+    data = dict(row)
+    data["payload"] = json.loads(data.pop("payload_json") or "{}")
+    return data
+
+
+def row_to_sync_event(row: sqlite3.Row) -> dict[str, Any]:
+    data = dict(row)
+    data["request"] = json.loads(data.pop("request_json") or "{}")
+    response_json = data.pop("response_json")
+    data["response"] = json.loads(response_json or "{}") if response_json else {}
+    return data
+
+
+def row_to_poller_run(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     data["payload"] = json.loads(data.pop("payload_json") or "{}")
     return data

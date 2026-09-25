@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}Cooperados · Nova Guarda{% endblock %}
+{% block content %}
+<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:4px">
+  <h1 class="page-title mt-0 mb-0">Cooperados</h1>
+  <span class="muted text-sm">{{ rows|length }} registro(s)</span>
+</div>
+<p class="page-sub">Estado local de onboarding, consentimento e validação na 77Gestão.</p>
+
+<div class="card" style="padding:14px 18px;margin-bottom:16px">
+  <div class="row-gap">
+    <span class="section-label" style="margin:0">Status:</span>
+    <a class="btn {% if not status_filter %}primary{% endif %}" href="{{ url_for('cooperados') }}">Todos</a>
+    {% for key in ['terms_sent', 'accepted', 'rejected', 'not_started'] %}
+    <a class="btn {% if status_filter == key %}primary{% endif %}" href="{{ url_for('cooperados', status=key) }}">{{ key|status_label }}</a>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Telefone</th><th>Parceiro</th><th>Status</th><th>Termo enviado</th><th>Aceito em</th><th>Atualizado</th></tr></thead>
+    <tbody>
+    {% for row in rows %}
+    <tr>
+      <td class="mono">{{ row.phone }}</td>
+      <td><strong>{{ row.partner_name or '-' }}</strong><br><span class="muted text-sm">{{ row.partner_id or '-' }}</span></td>
+      <td>
+        {% if row.onboarding_status == 'accepted' %}
+        <span class="badge badge-ok">{{ row.onboarding_status|status_label }}</span>
+        {% elif row.onboarding_status == 'rejected' %}
+        <span class="badge badge-fail">{{ row.onboarding_status|status_label }}</span>
+        {% else %}
+        <span class="badge badge-pend">{{ row.onboarding_status|status_label }}</span>
+        {% endif %}
+      </td>
+      <td>{{ row.terms_sent_at|brt }}</td>
+      <td>{{ row.accepted_at|brt }}</td>
+      <td>{{ row.updated_at|brt }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted" style="text-align:center;padding:24px">Nenhum cooperado registrado ainda.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

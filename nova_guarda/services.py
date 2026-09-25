@@ -20,6 +20,14 @@ def timestamp() -> str:
 
 
 def whatsapp_provider() -> str:
+    try:
+        from nova_guarda.storage import get_setting
+
+        configured = get_setting("active_provider").strip().lower()
+        if configured:
+            return configured
+    except Exception:
+        pass
     return os.getenv("WHATSAPP_PROVIDER", "zapi").strip().lower()
 
 

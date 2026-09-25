@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Escalas · Nova Guarda{% endblock %}
+{% block content %}
+<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:4px">
+  <h1 class="page-title mt-0 mb-0">Escalas e appointments</h1>
+  <span class="muted text-sm">{{ bookings|length }} escala(s)</span>
+</div>
+<p class="page-sub">Monitoramento do fluxo automático entre 77Gestão, WhatsApp e banco local. A tela acompanha estados; os envios acontecem pelo poller e pelos webhooks.</p>
+
+<div class="card">
+  <p class="card-title">Escalas</p>
+  <p class="card-sub">Ordem operacional: buscar aguardando envio → enviar WhatsApp com sucesso → persistir envio → POST <code>sent</code> na 77Gestão.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Booking</th><th>Cooperado</th><th>Telefone</th><th>Status local</th><th>77Gestão</th><th>Provider</th><th>Última atualização</th></tr></thead>
+      <tbody>
+      {% for row in bookings %}
+      <tr>
+        <td class="mono">{{ row.booking_id }}</td>
+        <td>{{ row.partner_name or '-' }}</td>
+        <td class="mono">{{ row.phone or '-' }}</td>
+        <td><span class="badge badge-fut">{{ row.local_status|status_label }}</span></td>
+        <td>{{ row.gestao77_status or '-' }}</td>
+        <td>{{ row.provider or '-' }}</td>
+        <td>{{ row.updated_at|brt }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="muted" style="text-align:center;padding:24px">Nenhuma escala local ainda.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <p class="card-title">Appointments</p>
+  <p class="card-sub">Check-in/check-out sincronizam com a 77Gestão. Atraso e não vou são eventos somente locais, sem POST operacional por enquanto.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Appointment</th><th>Booking</th><th>Telefone</th><th>Status local</th><th>77Gestão</th><th>Provider</th><th>Check-in</th><th>Check-out</th><th>Atualizado</th></tr></thead>
+      <tbody>
+      {% for row in appointments %}
+      <tr>
+        <td class="mono">{{ row.appointment_id }}</td>
+        <td class="mono">{{ row.booking_id }}</td>
+        <td class="mono">{{ row.phone }}</td>
+        <td><span class="badge {% if row.local_status == 'no_show_reported' %}badge-fail{% elif row.local_status == 'late_reported' %}badge-warn{% else %}badge-fut{% endif %}">{{ row.local_status|status_label }}</span></td>
+        <td>{{ row.gestao77_status or '-' }}</td>
+        <td>{{ row.provider or '-' }}</td>
+        <td>{{ row.checked_in_at|brt }}</td>
+        <td>{{ row.checked_out_at|brt }}</td>
+        <td>{{ row.updated_at|brt }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="muted" style="text-align:center;padding:24px">Nenhum appointment local ainda.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

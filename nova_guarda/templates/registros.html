@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Registros · Nova Guarda{% endblock %}
+{% block content %}
+<div style="display:flex;align-items:baseline;gap:12px;margin-bottom:4px">
+  <h1 class="page-title mt-0 mb-0">Registros</h1>
+  <span class="muted text-sm">syncs e webhooks</span>
+</div>
+<p class="page-sub">Histórico técnico da operação: chamadas para 77Gestão e eventos normalizados de conversa.</p>
+
+<div class="card">
+  <p class="card-title">Sync 77Gestão</p>
+  <form method="post" action="{{ url_for('retry_ui') }}" style="margin-bottom:12px">
+    <button class="primary" type="submit">Retry de sincronizações pendentes</button>
+  </form>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Quando</th><th>Entidade</th><th>Ação</th><th>Status</th><th>Erro</th><th>Payload</th></tr></thead>
+      <tbody>
+      {% for row in sync_events %}
+      <tr>
+        <td>{{ row.created_at|brt }}</td>
+        <td>{{ row.entity_type }} <span class="mono">{{ row.entity_id }}</span></td>
+        <td>{{ row.action }}</td>
+        <td><span class="badge {% if row.ok %}badge-ok{% else %}badge-fail{% endif %}">{{ 'ok' if row.ok else 'falha' }}</span></td>
+        <td>{{ row.error or '-' }}</td>
+        <td><details><summary class="muted text-sm" style="cursor:pointer">ver JSON</summary><pre>{{ {'request': row.request, 'response': row.response}|tojson(indent=2) }}</pre></details></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted" style="text-align:center;padding:24px">Nenhum sync registrado.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <p class="card-title">Ciclos de automação</p>
+  <p class="card-sub">Cada ciclo consulta a 77Gestão, envia mensagens elegíveis e tenta o retry dos status pendentes.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Início</th><th>Fim</th><th>Status</th><th>Escalas</th><th>Check-ins</th><th>Check-outs</th><th>Retry</th><th>Detalhe</th></tr></thead>
+      <tbody>
+      {% for run in poller_runs %}
+      {% set payload = run.payload or {} %}
+      {% set items = payload.get('items', []) %}
+      <tr>
+        <td>{{ run.started_at|brt }}</td>
+        <td>{{ run.finished_at|brt }}</td>
+        <td><span class="badge {% if run.status == 'success' %}badge-ok{% elif run.status == 'failed' %}badge-fail{% else %}badge-warn{% endif %}">{{ run.status }}</span></td>
+        <td>{{ items|length }}</td>
+        <td>{{ payload.get('checkins', [])|length }}</td>
+        <td>{{ payload.get('checkouts', [])|length }}</td>
+        <td>{{ payload.get('retry', {}).get('results', [])|length }}</td>
+        <td><details><summary class="muted text-sm" style="cursor:pointer">ver JSON</summary><pre>{{ payload|tojson(indent=2) }}</pre></details></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="muted" style="text-align:center;padding:24px">Nenhum ciclo executado ainda.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <p class="card-title">Eventos WhatsApp / Chat Dev</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Quando</th><th>Tipo</th><th>Telefone</th><th>Mensagem</th><th>Payload</th></tr></thead>
+      <tbody>
+      {% for event in conversation_events %}
+      {% set payload = event.payload or {} %}
+      <tr>
+        <td>{{ event.received_at|brt }}</td>
+        <td>{{ payload.type or '-' }}</td>
+        <td class="mono">{{ payload.phone or '-' }}</td>
+        <td>{{ payload.get('text', {}).get('message', '') or payload.get('buttonReply', {}).get('message', '') or '-' }}</td>
+        <td><details><summary class="muted text-sm" style="cursor:pointer">ver JSON</summary><pre>{{ payload|tojson(indent=2) }}</pre></details></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="muted" style="text-align:center;padding:24px">Nenhum evento em memória.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

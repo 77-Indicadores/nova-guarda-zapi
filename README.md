@@ -97,7 +97,7 @@ python app.py
 
 ## Chat dev local
 
-Para testar os fluxos sem WhatsApp/Z-API real, rode o app e abra:
+Para testar os fluxos sem WhatsApp/Z-API real, rode o app, entre no painel com `ADMIN_USER`/`ADMIN_PASSWORD` e abra:
 
 ```text
 http://127.0.0.1:3000/dev/chat
@@ -181,6 +181,47 @@ checkin_pending -> no_show_reported
 O botão carrega o `appointment_id` (`late_15:{appointment_id}`, `late_30:{appointment_id}`, `late_60:{appointment_id}`, `reason_personal:{appointment_id}`, etc.) para impedir evento antigo de outro appointment. Atraso persiste `late_minutes`; não comparecimento persiste `no_show_reason`.
 
 ### Retry de integrações
+
+### Automação operacional
+
+O painel possui um poller configurável em `/configuracoes`. Ele é a rotina normal de operação:
+
+```text
+consultar 77Gestão -> importar bookings pendentes -> validar cooperado accepted -> enviar escala -> sincronizar sent -> avaliar check-in/check-out -> retry de pendências
+```
+
+Parâmetros controlados pela interface:
+
+- `Poller ativo`: liga/desliga o ciclo automático.
+- `Intervalo em minutos`: frequência do ciclo.
+- `Limite por ciclo`: limite de escalas enviadas por execução.
+- `Disparar check-in/check-out automático`: liga/desliga presença automática.
+- `Check-in antes`: quantos minutos antes do horário do appointment o sistema pode enviar o check-in.
+- `Check-out depois`: quantos minutos depois do horário de referência o sistema pode enviar o check-out.
+
+O ciclo respeita `America/Sao_Paulo`. Check-in só é enviado quando o booking local está `sent` ou `confirmed`, tem `appointment_id`, telefone, cooperado com termo `accepted` e está dentro da janela configurada. Check-out só é enviado para appointment local `checked_in`; a confirmação do cooperado continua vindo pelo botão do WhatsApp e só então sincroniza `checked_out` com a 77Gestão.
+
+Também existe o botão administrativo `Executar ciclo agora` no painel. Ele não substitui a operação automática; serve para apresentação, homologação e troubleshooting.
+
+### Roteiro de apresentação
+
+1. Iniciar o app e abrir `http://127.0.0.1:3000`.
+2. Entrar em `/configuracoes`.
+3. Selecionar provider WhatsApp (`Z-API` ou `Meta Cloud oficial`), modo 77Gestão e deixar `Poller ativo`.
+4. Definir janelas curtas para apresentação, se necessário, por exemplo check-in 1440 minutos antes e check-out 1 minuto depois.
+5. O cooperado envia `ativar` pelo WhatsApp real ou pelo Chat Dev.
+6. O sistema valida telefone em `phones[]` na 77Gestão, pede para salvar o contato, envia o PDF do termo e exibe botões de aceite/recusa.
+7. Com aceite registrado, o cooperado fica `accepted`.
+8. A 77Gestão deve ter uma escala/booking pendente para esse cooperado e telefone.
+9. Rodar `Executar ciclo agora` ou aguardar o poller.
+10. O sistema envia a escala pelo WhatsApp e sincroniza `sent`.
+11. O cooperado confirma ou recusa; o webhook sincroniza `confirmed` ou `declined`.
+12. Dentro da janela configurada, o poller envia o check-in.
+13. O cooperado responde `Sim, cheguei`, `Vou atrasar` ou `Não vou`.
+14. `Sim, cheguei` sincroniza `checked_in`; atraso e não vou ficam somente locais.
+15. Após a janela de check-out, o poller envia o botão de check-out.
+16. O cooperado finaliza e o sistema sincroniza `checked_out`.
+17. Acompanhar tudo em `/cooperados`, `/escalas` e `/registros`.
 
 Retry manual de pendências:
 
@@ -266,7 +307,7 @@ Content-Type: application/json
 }
 ```
 
-Enviar check-in de um agendamento:
+Disparo técnico de check-in de um agendamento:
 
 ```http
 POST /api/appointments/{appointment_id}/send-checkin

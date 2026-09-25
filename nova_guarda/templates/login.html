@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Acesso · Nova Guarda{% endblock %}
+{% block content %}
+<div style="min-height:60vh;display:flex;align-items:center;justify-content:center">
+  <div style="width:100%;max-width:400px">
+    <div class="card" style="padding:32px">
+      <div style="margin-bottom:24px">
+        <h1 style="margin:0 0 6px;font-size:20px;font-weight:800">Acesso operacional</h1>
+        <p class="muted text-sm" style="margin:0">Entre para acessar cooperados, escalas, eventos e configurações.</p>
+      </div>
+      <form method="post" action="{{ url_for('login_post', next=request.args.get('next')) }}">
+        <div style="display:flex;flex-direction:column;gap:14px">
+          <label style="display:flex;flex-direction:column;gap:6px">
+            Usuário
+            <input name="username" type="text" autocomplete="username" placeholder="admin">
+          </label>
+          <label style="display:flex;flex-direction:column;gap:6px">
+            Senha
+            <input name="password" type="password" autocomplete="current-password" placeholder="senha">
+          </label>
+          <button class="primary" type="submit" style="width:100%;justify-content:center;padding:11px;font-size:14px;margin-top:4px">Entrar</button>
+        </div>
+      </form>
+    </div>
+    <p class="muted text-sm" style="text-align:center;margin-top:12px">Nova Guarda · operação WhatsApp</p>
+  </div>
+</div>
+{% endblock %}

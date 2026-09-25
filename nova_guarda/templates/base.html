@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Nova Guarda{% endblock %}</title>
+  <style>
+    :root {
+      --ink: #0f172a;
+      --ink-2: #334155;
+      --muted: #64748b;
+      --line: #e2e8f0;
+      --line-2: #f1f5f9;
+      --bg: #f8fafc;
+      --panel: #ffffff;
+      --brand: #0f766e;
+      --brand-light: #f0fdfa;
+      --brand-border: #99f6e4;
+      --warn: #92400e;
+      --warn-bg: #fffbeb;
+      --warn-border: #fcd34d;
+      --bad: #991b1b;
+      --bad-bg: #fef2f2;
+      --bad-border: #fca5a5;
+      --ok: #14532d;
+      --ok-bg: #f0fdf4;
+      --ok-border: #86efac;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; }
+    header {
+      height: 60px;
+      background: #07172f;
+      color: white;
+      display: flex;
+      align-items: center;
+      padding: 0 24px;
+      gap: 14px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.4);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .logo-mark { height: 36px; width: 36px; border-radius: 7px; display: grid; place-items: center; background: var(--brand); font-weight: 800; }
+    .h-brand { font-size: 16px; font-weight: 700; letter-spacing: -.3px; }
+    .h-sub { color: #94a3b8; font-size: 12px; }
+    .h-spacer { flex: 1; }
+    .h-logout { background: transparent; color: #cbd5e1; border: 1px solid #334155; border-radius: 7px; padding: 6px 12px; cursor: pointer; font-size: 13px; }
+    .h-logout:hover { border-color: #64748b; color: white; }
+    nav { background: var(--panel); border-bottom: 1px solid var(--line); padding: 0 24px; display: flex; gap: 4px; overflow-x: auto; }
+    .nav-link { display: inline-flex; align-items: center; gap: 6px; padding: 12px 14px; font-size: 13px; font-weight: 600; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; transition: color .15s, border-color .15s; white-space: nowrap; }
+    .nav-link:hover { color: var(--ink); border-color: var(--line); }
+    .nav-link.active { color: var(--brand); border-color: var(--brand); }
+    main { padding: 28px 24px; max-width: 1260px; margin: 0 auto; }
+    .page-title { font-size: 20px; font-weight: 700; margin: 0 0 4px; }
+    .page-sub { color: var(--muted); font-size: 13px; margin: 0 0 22px; }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 20px 22px; margin-bottom: 18px; }
+    .card-title { font-size: 15px; font-weight: 700; margin: 0 0 4px; color: var(--ink); }
+    .card-sub { font-size: 12px; color: var(--muted); margin: 0 0 16px; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; margin-bottom: 20px; }
+    .kpi-card { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--brand); border-radius: 10px; padding: 18px 20px; display: flex; flex-direction: column; gap: 4px; }
+    .kpi-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
+    .kpi-value { font-size: 32px; font-weight: 800; line-height: 1; }
+    button, .btn { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--panel); border-radius: 7px; padding: 8px 14px; color: var(--ink-2); cursor: pointer; font-size: 13px; font-weight: 600; transition: background .1s, border-color .1s; text-decoration: none; white-space: nowrap; }
+    button:hover, .btn:hover { background: var(--line-2); border-color: #cbd5e1; }
+    button.primary, .btn.primary { background: var(--brand); border-color: var(--brand); color: white; }
+    button.primary:hover, .btn.primary:hover { background: #0e6560; }
+    .flash-list { margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px; }
+    .flash { display: flex; align-items: flex-start; gap: 10px; background: var(--brand-light); border: 1px solid var(--brand-border); color: var(--brand); padding: 12px 16px; border-radius: 8px; font-size: 13px; font-weight: 500; }
+    .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+    table { width: 100%; border-collapse: collapse; background: var(--panel); }
+    thead th { background: #0f172a; color: #cbd5e1; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px; padding: 10px 12px; text-align: left; white-space: nowrap; }
+    tbody tr { border-bottom: 1px solid var(--line); transition: background .1s; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: var(--line-2); }
+    td { padding: 10px 12px; font-size: 13px; vertical-align: middle; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .badge { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 3px 10px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+    .badge-ok { background: #dcfce7; color: #15803d; }
+    .badge-fail { background: #fee2e2; color: #991b1b; }
+    .badge-pend { background: #fef3c7; color: #92400e; }
+    .badge-sent { background: #dbeafe; color: #1d4ed8; }
+    .badge-fut { background: #f1f5f9; color: #64748b; }
+    .badge-warn { background: #fef3c7; color: #92400e; }
+    .ops-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-bottom: 16px; }
+    .op-block { border: 1px solid var(--line); border-radius: 9px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+    .op-block-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
+    .op-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    label { font-size: 12px; font-weight: 600; color: var(--ink-2); }
+    select, input[type=number], input[type=text], input[type=password] { padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; font-size: 13px; background: var(--panel); color: var(--ink); width: 100%; }
+    input[type=checkbox] { width: 16px; height: 16px; accent-color: var(--brand); cursor: pointer; }
+    .muted { color: var(--muted); }
+    .text-sm { font-size: 12px; }
+    .row-gap { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .mt-0 { margin-top: 0; }
+    .mb-0 { margin-bottom: 0; }
+    .section-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); margin: 0 0 10px; }
+    code, .mono { font-family: Consolas, "Courier New", monospace; font-size: 12px; }
+    pre { margin: 8px 0 0; font-size: 11px; background: var(--line-2); border: 1px solid var(--line); border-radius: 6px; padding: 10px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+  </style>
+</head>
+<body>
+<header>
+  <div class="logo-mark">NG</div>
+  <div>
+    <div class="h-brand">Nova Guarda</div>
+    <div class="h-sub">WhatsApp Cloud / Z-API · 77Gestão · operação de cooperados</div>
+  </div>
+  <div class="h-spacer"></div>
+  {% if session.get("authenticated") %}
+  <form method="post" action="{{ url_for('logout') }}" style="margin:0">
+    <button class="h-logout" type="submit">Sair</button>
+  </form>
+  {% endif %}
+</header>
+
+{% if session.get("authenticated") %}
+<nav>
+  <a class="nav-link {% if request.endpoint == 'index' %}active{% endif %}" href="{{ url_for('index') }}">Painel</a>
+  <a class="nav-link {% if request.endpoint == 'cooperados' %}active{% endif %}" href="{{ url_for('cooperados') }}">Cooperados</a>
+  <a class="nav-link {% if request.endpoint == 'escalas' %}active{% endif %}" href="{{ url_for('escalas') }}">Escalas</a>
+  <a class="nav-link {% if request.endpoint == 'registros' %}active{% endif %}" href="{{ url_for('registros') }}">Registros</a>
+  <a class="nav-link {% if request.endpoint == 'configuracoes' or request.endpoint == 'configuracoes_save' %}active{% endif %}" href="{{ url_for('configuracoes') }}">Configurações</a>
+  <a class="nav-link" href="{{ url_for('dev_chat') }}">Chat Dev</a>
+  <a class="nav-link {% if request.endpoint == 'policy' %}active{% endif %}" href="{{ url_for('policy') }}">Política</a>
+</nav>
+{% endif %}
+
+<main>
+  {% set messages = get_flashed_messages() %}
+  {% if messages %}
+  <div class="flash-list">
+    {% for msg in messages %}
+    <div class="flash">{{ msg }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

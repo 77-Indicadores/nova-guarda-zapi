@@ -1,14 +1,17 @@
 import logging
 import os
+import threading
 import uuid
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, flash, jsonify, redirect, render_template, render_template_string, request, session, url_for
+from werkzeug.security import check_password_hash
 
 load_dotenv(encoding="utf-8-sig")
 
 import nova_guarda.services as services
+from nova_guarda.automation import run_automation_once
 from nova_guarda.gestao77_service import (
     list_pending_partner_bookings,
     record_local_late,
@@ -37,7 +40,19 @@ from nova_guarda.config import (
     WEBHOOK_PATH,
 )
 from nova_guarda.state import AGENDA_STATE, LOCATION_LINKS, RECEIVED_EVENTS, TERMS_STATE
-from nova_guarda.storage import get_cooperator, init_db, list_bookings, upsert_booking
+from nova_guarda.storage import (
+    all_settings,
+    dashboard_metrics,
+    get_cooperator,
+    init_db,
+    list_appointments,
+    list_bookings,
+    list_cooperators,
+    list_poller_runs,
+    list_sync_events,
+    set_settings,
+    upsert_booking,
+)
 from nova_guarda.timezone import br_now, br_timestamp
 
 
@@ -50,6 +65,20 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+PUBLIC_ENDPOINTS = {
+    "login",
+    "login_post",
+    "policy",
+    "healthcheck",
+    "webhook",
+    "verify_webhook",
+    "static",
+}
+
+_POLLER_THREAD: threading.Thread | None = None
+_POLLER_STOP = threading.Event()
+_POLLER_LOCK = threading.Lock()
 
 
 from nova_guarda.flows import (
@@ -531,9 +560,223 @@ def send_onboarding_error(phone: str) -> None:
     append_onboarding_reply(phone, "onboarding_error", reply, response_payload)
 
 
+def valid_admin_password(password: str) -> bool:
+    expected = os.getenv("ADMIN_PASSWORD", "admin")
+    if expected.startswith(("pbkdf2:", "scrypt:")):
+        return check_password_hash(expected, password)
+    return password == expected
+
+
+def brt(value: str | None) -> str:
+    if not value:
+        return "-"
+    return str(value).replace("T", " ")[:16]
+
+
+def status_label(status: str | None) -> str:
+    labels = {
+        "not_started": "Não iniciado",
+        "terms_sent": "Termo enviado",
+        "accepted": "Ativo",
+        "rejected": "Bloqueado",
+        "pending": "Pendente",
+        "sent": "Enviado",
+        "confirmed": "Confirmado",
+        "declined": "Recusado",
+        "checkin_pending": "Check-in pendente",
+        "checked_in": "Checked in",
+        "checkout_pending": "Check-out pendente",
+        "checked_out": "Checked out",
+        "late_reported": "Atraso local",
+        "no_show_reported": "Não vou local",
+    }
+    return labels.get(str(status or ""), str(status or "-"))
+
+
+def parse_positive_int(value: str | int | None, default: int, minimum: int = 1, maximum: int = 500) -> int:
+    try:
+        parsed = int(value or default)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def poller_interval_seconds(settings: dict[str, str]) -> int:
+    minutes = parse_positive_int(settings.get("poll_interval_minutes"), 5, minimum=1, maximum=1440)
+    return minutes * 60
+
+
+def poller_loop() -> None:
+    while not _POLLER_STOP.is_set():
+        settings = all_settings()
+        if settings.get("automation_enabled") == "1":
+            with _POLLER_LOCK:
+                run_automation_once(limit=parse_positive_int(settings.get("automation_send_limit"), 25, minimum=0))
+        _POLLER_STOP.wait(poller_interval_seconds(settings))
+
+
+def ensure_poller_started() -> None:
+    global _POLLER_THREAD
+    if _POLLER_THREAD and _POLLER_THREAD.is_alive():
+        return
+    _POLLER_STOP.clear()
+    _POLLER_THREAD = threading.Thread(target=poller_loop, name="nova-guarda-poller", daemon=True)
+    _POLLER_THREAD.start()
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
+    app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev-only-change-me")
+    app.jinja_env.filters["brt"] = brt
+    app.jinja_env.filters["status_label"] = status_label
     init_db()
+    if all_settings().get("automation_enabled") == "1":
+        ensure_poller_started()
+
+    @app.before_request
+    def require_login():
+        if request.endpoint in PUBLIC_ENDPOINTS:
+            return None
+        if request.path.startswith(("/api/", "/webhook", "/health", "/checkin-location/")):
+            return None
+        if request.path == "/dev/simulate-whatsapp" and services.DEV_FAKE_ZAPI:
+            return None
+        if session.get("authenticated"):
+            return None
+        return redirect(url_for("login", next=request.path))
+
+    @app.get("/login")
+    def login():
+        return render_template("login.html")
+
+    @app.post("/login")
+    def login_post():
+        user = request.form.get("username", "")
+        password = request.form.get("password", "")
+        if user == os.getenv("ADMIN_USER", "admin") and valid_admin_password(password):
+            session.clear()
+            session["authenticated"] = True
+            session["user"] = user
+            next_url = request.args.get("next", "")
+            if not next_url.startswith("/") or next_url.startswith("//"):
+                next_url = url_for("index")
+            return redirect(next_url)
+        flash("Usuário ou senha inválidos.")
+        return redirect(url_for("login"))
+
+    @app.post("/logout")
+    def logout():
+        session.clear()
+        return redirect(url_for("login"))
+
+    @app.get("/")
+    def index():
+        return render_template(
+            "index.html",
+            metrics=dashboard_metrics(),
+            settings=all_settings(),
+            bookings=list_bookings()[:10],
+            appointments=list_appointments()[:10],
+            sync_events=list_sync_events(8),
+        )
+
+    @app.get("/cooperados")
+    def cooperados():
+        status = request.args.get("status") or None
+        return render_template("cooperados.html", rows=list_cooperators(status), status_filter=status)
+
+    @app.get("/escalas")
+    def escalas():
+        status = request.args.get("status") or None
+        return render_template(
+            "escalas.html",
+            bookings=list_bookings(status),
+            appointments=list_appointments(),
+            status_filter=status,
+        )
+
+    @app.post("/sync/retry-ui")
+    def retry_ui():
+        result = retry_pending_gestao77_syncs()
+        ok_count = len([item for item in result.get("results", []) if item.get("ok")])
+        fail_count = len([item for item in result.get("results", []) if not item.get("ok")])
+        flash(f"Retry concluído: {ok_count} ok, {fail_count} falha(s).")
+        return redirect(request.referrer or url_for("index"))
+
+    @app.post("/automacao/run-ui")
+    def automation_run_ui():
+        with _POLLER_LOCK:
+            result = run_automation_once()
+        items = result.get("items", [])
+        sent_count = len([item for item in items if item.get("action") == "sent" and item.get("ok")])
+        fail_count = len([item for item in items if item.get("error")])
+        status = result.get("run", {}).get("status", "desconhecido")
+        flash(f"Automação executada: status {status}, {sent_count} envio(s), {fail_count} ocorrência(s).")
+        return redirect(request.referrer or url_for("index"))
+
+    @app.get("/registros")
+    def registros():
+        return render_template(
+            "registros.html",
+            sync_events=list_sync_events(120),
+            conversation_events=list(RECEIVED_EVENTS)[:120],
+            poller_runs=list_poller_runs(50),
+        )
+
+    @app.get("/configuracoes")
+    def configuracoes():
+        return render_template("configuracoes.html", cfg=all_settings())
+
+    @app.post("/configuracoes")
+    def configuracoes_save():
+        provider = request.form.get("active_provider", "").strip().lower()
+        if provider not in {"", "zapi", "official"}:
+            flash("Provider inválido.")
+            return redirect(url_for("configuracoes"))
+        operation_mode = request.form.get("operation_mode", "production").strip() or "production"
+        gestao77_mode = request.form.get("gestao77_mode", "real").strip() or "real"
+        if operation_mode not in {"production", "test"}:
+            flash("Modo operacional inválido.")
+            return redirect(url_for("configuracoes"))
+        if gestao77_mode not in {"real", "fake"}:
+            flash("Modo 77Gestão inválido.")
+            return redirect(url_for("configuracoes"))
+
+        automation_enabled = "1" if request.form.get("automation_enabled") == "1" else "0"
+        poll_interval_minutes = str(parse_positive_int(request.form.get("poll_interval_minutes"), 5, minimum=1, maximum=1440))
+        automation_send_limit = str(parse_positive_int(request.form.get("automation_send_limit"), 25, minimum=0, maximum=500))
+        auto_checkin_enabled = "1" if request.form.get("auto_checkin_enabled") == "1" else "0"
+        checkin_lead_minutes = str(parse_positive_int(request.form.get("checkin_lead_minutes"), 120, minimum=0, maximum=10080))
+        checkout_after_minutes = str(parse_positive_int(request.form.get("checkout_after_minutes"), 60, minimum=0, maximum=10080))
+        set_settings(
+            {
+                "operation_mode": operation_mode,
+                "active_provider": provider,
+                "gestao77_mode": gestao77_mode,
+                "test_phone": normalize_phone(request.form.get("test_phone", "")),
+                "test_partner_name": request.form.get("test_partner_name", "Cooperado Teste").strip() or "Cooperado Teste",
+                "test_booking_id": request.form.get("test_booking_id", "test-booking-1").strip() or "test-booking-1",
+                "test_appointment_id": request.form.get("test_appointment_id", "test-appointment-1").strip() or "test-appointment-1",
+                "automation_enabled": automation_enabled,
+                "poll_interval_minutes": poll_interval_minutes,
+                "automation_send_limit": automation_send_limit,
+                "auto_checkin_enabled": auto_checkin_enabled,
+                "checkin_lead_minutes": checkin_lead_minutes,
+                "checkout_after_minutes": checkout_after_minutes,
+            }
+        )
+        if automation_enabled == "1":
+            ensure_poller_started()
+        flash("Configurações salvas com sucesso.")
+        return redirect(url_for("configuracoes"))
+
+    @app.get("/policy")
+    def policy():
+        return render_template("policy.html")
+
+    @app.get("/chat")
+    def chat():
+        return render_template_string(CHAT_HTML, port=PORT)
 
     @app.post(WEBHOOK_PATH)
     def webhook():
@@ -563,10 +806,6 @@ def create_app() -> Flask:
         if mode == "subscribe" and token and token == WHATSAPP_VERIFY_TOKEN:
             return str(challenge or ""), 200
         return jsonify({"ok": False, "error": "Webhook não verificado."}), 403
-
-    @app.get("/")
-    def chat():
-        return render_template_string(CHAT_HTML, port=PORT)
 
     @app.get("/dev/chat")
     def dev_chat():

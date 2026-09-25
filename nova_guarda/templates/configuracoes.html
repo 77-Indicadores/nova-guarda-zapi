@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Configurações · Nova Guarda{% endblock %}
+{% block content %}
+<h1 class="page-title">Configurações</h1>
+<p class="page-sub">Parâmetros operacionais que podem mudar sem redeploy. Credenciais ficam no <code>.env</code>.</p>
+
+<form method="post" action="{{ url_for('configuracoes_save') }}">
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px">
+    <div class="card">
+      <p class="card-title">Modo operacional</p>
+      <p class="card-sub">Teste assistido prepara apresentação, mas continua dentro da aplicação principal.</p>
+      <label style="display:flex;flex-direction:column;gap:6px">
+        Modo
+        <select name="operation_mode">
+          <option value="production" {% if cfg.operation_mode == 'production' %}selected{% endif %}>Produção</option>
+          <option value="test" {% if cfg.operation_mode == 'test' %}selected{% endif %}>Teste assistido</option>
+        </select>
+      </label>
+    </div>
+    <div class="card">
+      <p class="card-title">WhatsApp</p>
+      <p class="card-sub">Seleciona o provider sem editar arquivo de ambiente.</p>
+      <label style="display:flex;flex-direction:column;gap:6px">
+        Provider
+        <select name="active_provider">
+          <option value="" {% if not cfg.active_provider %}selected{% endif %}>Padrão do ambiente</option>
+          <option value="zapi" {% if cfg.active_provider == 'zapi' %}selected{% endif %}>Z-API</option>
+          <option value="official" {% if cfg.active_provider == 'official' %}selected{% endif %}>Meta Cloud oficial</option>
+        </select>
+      </label>
+    </div>
+    <div class="card">
+      <p class="card-title">77Gestão</p>
+      <p class="card-sub">Use fake apenas em desenvolvimento controlado.</p>
+      <label style="display:flex;flex-direction:column;gap:6px">
+        Modo
+        <select name="gestao77_mode">
+          <option value="real" {% if cfg.gestao77_mode == 'real' %}selected{% endif %}>Real</option>
+          <option value="fake" {% if cfg.gestao77_mode == 'fake' %}selected{% endif %}>Fake local</option>
+        </select>
+      </label>
+    </div>
+    <div class="card">
+      <p class="card-title">Automação</p>
+      <p class="card-sub">Controla o ciclo que consulta a 77Gestão e envia mensagens pelo WhatsApp.</p>
+      <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <input type="checkbox" name="automation_enabled" value="1" {% if cfg.automation_enabled == '1' %}checked{% endif %}>
+        Poller ativo
+      </label>
+      <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <input type="checkbox" name="auto_checkin_enabled" value="1" {% if cfg.auto_checkin_enabled == '1' %}checked{% endif %}>
+        Disparar check-in/check-out automático
+      </label>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px">
+        <label style="display:flex;flex-direction:column;gap:6px">
+          Intervalo em minutos
+          <input type="number" min="1" max="1440" name="poll_interval_minutes" value="{{ cfg.poll_interval_minutes }}">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:6px">
+          Limite por ciclo
+          <input type="number" min="0" max="500" name="automation_send_limit" value="{{ cfg.automation_send_limit }}">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:6px">
+          Check-in antes
+          <input type="number" min="0" max="10080" name="checkin_lead_minutes" value="{{ cfg.checkin_lead_minutes }}">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:6px">
+          Check-out depois
+          <input type="number" min="0" max="10080" name="checkout_after_minutes" value="{{ cfg.checkout_after_minutes }}">
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <p class="card-title">Dados padrão do teste assistido</p>
+    <p class="card-sub">Usado para preparar massa de homologação e apresentação sem misturar com regra operacional.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px">
+      <label style="display:flex;flex-direction:column;gap:6px">Telefone<input type="text" name="test_phone" value="{{ cfg.test_phone }}"></label>
+      <label style="display:flex;flex-direction:column;gap:6px">Nome<input type="text" name="test_partner_name" value="{{ cfg.test_partner_name }}"></label>
+      <label style="display:flex;flex-direction:column;gap:6px">Booking ID<input type="text" name="test_booking_id" value="{{ cfg.test_booking_id }}"></label>
+      <label style="display:flex;flex-direction:column;gap:6px">Appointment ID<input type="text" name="test_appointment_id" value="{{ cfg.test_appointment_id }}"></label>
+    </div>
+  </div>
+
+  <button class="primary" type="submit">Salvar configurações</button>
+</form>
+{% endblock %}
