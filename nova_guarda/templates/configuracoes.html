@@ -87,26 +87,42 @@
 </form>
 
 <div class="card">
-  <p class="card-title">Ações de teste assistido</p>
+  <p class="card-title">Teste assistido</p>
   <p class="card-sub">
     Com 77Gestão em modo <strong>Real</strong>, cria cooperado e escala de verdade lá (via API) e manda a
     mensagem pelo WhatsApp de verdade. Em modo <strong>Fake</strong>, cria só localmente. Use um telefone real
-    para receber e responder as mensagens. Pode ser repetido quantas vezes quiser, com o mesmo telefone ou
-    telefones diferentes — cada clique em "Criar escala" gera uma escala nova (duração curta, de propósito,
-    para o check-out automático ficar disponível rápido durante o teste).
+    para receber e responder as mensagens. A escala tem duração curta de propósito, para o check-out
+    automático ficar disponível rápido durante o teste.
   </p>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:18px">
-    <form method="post" action="{{ url_for('teste_assistido_cooperado') }}" style="display:flex;flex-direction:column;gap:10px">
-      <p style="margin:0;font-weight:700">1. Criar cooperado de teste (já aceito)</p>
+    <form method="post" action="{{ url_for('teste_assistido_completo') }}" style="display:flex;flex-direction:column;gap:10px">
+      <p style="margin:0;font-weight:700">Rodar teste completo</p>
+      <p style="margin:0;font-size:13px;color:#6b7280">Prepara cooperado (se precisar) e já cria + envia uma escala nova.</p>
       <label style="display:flex;flex-direction:column;gap:6px">Telefone (com DDI+DDD)<input type="text" name="phone" placeholder="5513999999999" value="{{ cfg.test_phone }}" required></label>
       <label style="display:flex;flex-direction:column;gap:6px">Nome<input type="text" name="client_name" value="{{ cfg.test_partner_name }}"></label>
-      <button type="submit">Criar cooperado ativo</button>
+      <fieldset style="border:1px solid #d1d5db;border-radius:6px;padding:10px;display:flex;flex-direction:column;gap:6px">
+        <legend style="font-size:13px;padding:0 4px">Cooperado</legend>
+        <label style="display:flex;align-items:center;gap:6px;font-weight:400">
+          <input type="radio" name="cooperador_modo" value="existente" checked>
+          Usar existente se houver (padrão)
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-weight:400">
+          <input type="radio" name="cooperador_modo" value="novo">
+          Sempre criar novo
+        </label>
+      </fieldset>
+      <button class="primary" type="submit">Rodar teste completo</button>
     </form>
-    <form method="post" action="{{ url_for('teste_assistido_escala') }}" style="display:flex;flex-direction:column;gap:10px">
-      <p style="margin:0;font-weight:700">2. Criar escala de teste e enviar agora</p>
+    <form method="post" action="{{ url_for('teste_assistido_resetar') }}" style="display:flex;flex-direction:column;gap:10px">
+      <p style="margin:0;font-weight:700">Resetar teste</p>
+      <p style="margin:0;font-size:13px;color:#6b7280">
+        Apaga cooperado/escala/appointment locais desse telefone, para repetir o onboarding
+        (ativar → aceitar) do zero. Nunca mexe em dados da 77Gestão — uma escala real que já avançou lá
+        não volta a ficar pendente. Para gerar uma escala nova, use "Rodar teste completo" normalmente
+        depois do reset.
+      </p>
       <label style="display:flex;flex-direction:column;gap:6px">Telefone (com DDI+DDD)<input type="text" name="phone" placeholder="5513999999999" value="{{ cfg.test_phone }}" required></label>
-      <label style="display:flex;flex-direction:column;gap:6px">Nome do cliente<input type="text" name="client_name" value="{{ cfg.test_partner_name }}"></label>
-      <button class="primary" type="submit">Criar escala e enviar</button>
+      <button type="submit" style="border-color:#dc2626;color:#dc2626">Resetar teste</button>
     </form>
   </div>
 </div>

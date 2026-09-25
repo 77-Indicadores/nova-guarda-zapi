@@ -101,17 +101,75 @@ class AssistedTestModeTest(unittest.TestCase):
         self.assertNotEqual(first["booking_id"], second["booking_id"])
         self.assertNotEqual(first["appointment_id"], second["appointment_id"])
 
-    def test_route_seed_cooperator_via_ui(self):
-        response = self.client.post("/teste-assistido/cooperado", data={"phone": self.phone, "client_name": "Via UI"})
+    def test_run_full_assisted_test_creates_cooperator_when_missing(self):
+        from nova_guarda.gestao77_service import run_full_assisted_test
+
+        result = run_full_assisted_test(self.phone, "Via UI")
+
+        self.assertTrue(self.storage.cooperator_has_accepted_terms(self.phone))
+        booking = self.storage.get_booking(result["booking_id"])
+        self.assertEqual(booking["local_status"], "sent")
+
+    def test_run_full_assisted_test_reuses_existing_accepted_cooperator(self):
+        from nova_guarda.gestao77_service import run_full_assisted_test
+
+        first_cooperator = self.storage.upsert_cooperator(
+            self.phone, "accepted", {"id": "existing-partner", "name": "Já Aceito"}
+        )
+
+        run_full_assisted_test(self.phone, "Via UI")
+
+        cooperator_after = self.storage.get_cooperator(self.phone)
+        self.assertEqual(cooperator_after["partner_id"], first_cooperator["partner_id"])
+        self.assertEqual(cooperator_after["partner_name"], "Já Aceito")
+
+    def test_run_full_assisted_test_force_new_recreates_cooperator(self):
+        from nova_guarda.gestao77_service import run_full_assisted_test
+
+        run_full_assisted_test(self.phone, "Primeiro")
+        self.assertEqual(self.storage.get_cooperator(self.phone)["partner_name"], "Primeiro")
+
+        # Sem force_new: reaproveita o cooperado existente, não sobrescreve o nome.
+        run_full_assisted_test(self.phone, "Segundo")
+        self.assertEqual(self.storage.get_cooperator(self.phone)["partner_name"], "Primeiro")
+
+        # Com force_new: cria (sobrescreve) o cooperado de novo, com o nome novo.
+        run_full_assisted_test(self.phone, "Terceiro", force_new_cooperator=True)
+        self.assertEqual(self.storage.get_cooperator(self.phone)["partner_name"], "Terceiro")
+
+    def test_route_teste_completo_via_ui(self):
+        response = self.client.post(
+            "/teste-assistido/completo",
+            data={"phone": self.phone, "client_name": "Via UI", "cooperador_modo": "existente"},
+        )
         self.assertEqual(response.status_code, 302)
         self.assertTrue(self.storage.cooperator_has_accepted_terms(self.phone))
-
-    def test_route_seed_escala_via_ui(self):
-        self.client.post("/teste-assistido/cooperado", data={"phone": self.phone, "client_name": "Via UI"})
-        response = self.client.post("/teste-assistido/escala", data={"phone": self.phone, "client_name": "Via UI"})
-        self.assertEqual(response.status_code, 302)
         bookings = self.storage.list_bookings("sent")
         self.assertEqual(len(bookings), 1)
+
+    def test_route_resetar_clears_local_data(self):
+        from nova_guarda.gestao77_service import run_full_assisted_test
+
+        run_full_assisted_test(self.phone, "Via UI")
+        self.assertIsNotNone(self.storage.get_cooperator(self.phone))
+
+        response = self.client.post("/teste-assistido/resetar", data={"phone": self.phone})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIsNone(self.storage.get_cooperator(self.phone))
+        self.assertEqual(self.storage.list_bookings(), [])
+
+    def test_reset_never_touches_other_phones(self):
+        other_phone = "5513988887777"
+        from nova_guarda.gestao77_service import run_full_assisted_test
+
+        run_full_assisted_test(self.phone, "Alvo")
+        run_full_assisted_test(other_phone, "Intocado")
+
+        self.client.post("/teste-assistido/resetar", data={"phone": self.phone})
+
+        self.assertIsNone(self.storage.get_cooperator(self.phone))
+        self.assertIsNotNone(self.storage.get_cooperator(other_phone))
 
 
 if __name__ == "__main__":

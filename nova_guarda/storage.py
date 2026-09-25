@@ -322,12 +322,15 @@ def list_bookings(status: str | None = None) -> list[dict[str, Any]]:
 
 
 def list_bookings_for_checkin() -> list[dict[str, Any]]:
+    """Escalas elegíveis para disparo de check-in. Exige confirmação prévia do
+    cooperado (local_status == 'confirmed') — nunca dispara check-in para uma
+    escala apenas enviada, mesmo que a janela de horário já esteja aberta."""
     init_db()
     with connect() as conn:
         rows = conn.execute(
             """
             SELECT * FROM bookings
-            WHERE local_status IN ('sent', 'confirmed')
+            WHERE local_status = 'confirmed'
               AND COALESCE(appointment_id, '') != ''
             ORDER BY updated_at ASC
             """
@@ -1010,6 +1013,20 @@ def row_to_booking(row: Any) -> dict[str, Any]:
     data = dict(row)
     data["payload"] = json.loads(data.pop("payload_json") or "{}")
     return data
+
+
+def delete_local_data_for_phone(phone: str) -> dict[str, int]:
+    """Apaga cooperado, escalas, appointments e eventos de conversa locais de um
+    telefone, para permitir repetir o teste assistido do zero (ativar de novo).
+    Nunca escreve na 77Gestão nem apaga histórico de sync_events (log técnico)."""
+    init_db()
+    phone = phone.strip()
+    counts: dict[str, int] = {}
+    with connect() as conn:
+        for table in ("conversation_events", "appointments", "bookings", "cooperators"):
+            cursor = conn.execute(f"DELETE FROM {table} WHERE phone = ?", (phone,))
+            counts[table] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+    return counts
 
 
 def row_to_cooperator(row: Any) -> dict[str, Any]:

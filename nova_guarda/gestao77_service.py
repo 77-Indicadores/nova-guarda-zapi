@@ -14,6 +14,7 @@ from nova_guarda.services import whatsapp_provider
 from nova_guarda.state import AGENDA_STATE
 from nova_guarda.storage import (
     cooperator_has_accepted_terms,
+    delete_local_data_for_phone,
     get_appointment,
     get_booking,
     get_cooperator,
@@ -676,3 +677,37 @@ def seed_test_booking_and_send(phone: str, client_name: str = "") -> dict[str, A
 
     send_result = send_booking_to_partner(booking_id, phone)
     return {"booking_id": booking_id, "appointment_id": appointment_id, "send_result": send_result}
+
+
+def run_full_assisted_test(phone: str, client_name: str = "", force_new_cooperator: bool = False) -> dict[str, Any]:
+    """Ponto de entrada único do modo teste assistido: garante um cooperado
+    ativo (reaproveitando o existente por padrão, para não duplicar cooperados
+    reais na 77Gestão a cada clique) e cria + envia uma escala de teste nova.
+
+    force_new_cooperator=True sempre cria um cooperado novo, mesmo que já
+    exista um aceito para esse telefone — útil para testar explicitamente a
+    criação, mas normalmente desnecessário."""
+    phone = normalize_phone(phone)
+    if not phone:
+        raise ValueError("Informe um telefone para rodar o teste completo.")
+
+    existing = None if force_new_cooperator else get_cooperator(phone)
+    if not existing or existing.get("onboarding_status") != "accepted":
+        seed_test_cooperator(phone, client_name)
+
+    return seed_test_booking_and_send(phone, client_name)
+
+
+def reset_test_phone(phone: str) -> dict[str, int]:
+    """Apaga cooperado/escala/appointment/eventos locais de um telefone, para
+    poder repetir o teste assistido do zero (ativar de novo). Nunca escreve na
+    77Gestão: uma escala real que já avançou lá não volta a ficar pendente só
+    porque o estado local foi apagado — para gerar uma escala nova, use o
+    "Rodar teste completo" normalmente depois do reset."""
+    phone = normalize_phone(phone)
+    if not phone:
+        raise ValueError("Informe um telefone para resetar.")
+
+    counts = delete_local_data_for_phone(phone)
+    save_sync_event("cooperator", phone, "teste_assistido:reset", True, {"phone": phone}, counts)
+    return counts

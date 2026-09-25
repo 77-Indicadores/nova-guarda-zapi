@@ -22,8 +22,8 @@ from nova_guarda.gestao77_service import (
     retry_pending_gestao77_syncs,
     mark_appointment_checked_out,
     mark_booking_sent,
-    seed_test_booking_and_send,
-    seed_test_cooperator,
+    reset_test_phone,
+    run_full_assisted_test,
     send_booking_to_partner,
     send_checkin_to_partner,
     send_checkout_to_partner,
@@ -799,32 +799,33 @@ def create_app() -> Flask:
         flash("Configurações salvas com sucesso.")
         return redirect(url_for("configuracoes"))
 
-    @app.post("/teste-assistido/cooperado")
-    def teste_assistido_cooperado():
+    @app.post("/teste-assistido/completo")
+    def teste_assistido_completo():
         phone = normalize_phone(request.form.get("phone", ""))
         name = request.form.get("client_name", "")
+        force_new = request.form.get("cooperador_modo") == "novo"
         try:
-            cooperator = seed_test_cooperator(phone, name)
-        except ValueError as exc:
-            flash(str(exc))
-            return redirect(url_for("configuracoes"))
-        flash(f"Cooperado de teste pronto (aceito): {cooperator.get('partner_name') or name or phone} · {phone}.")
-        return redirect(url_for("configuracoes"))
-
-    @app.post("/teste-assistido/escala")
-    def teste_assistido_escala():
-        phone = normalize_phone(request.form.get("phone", ""))
-        name = request.form.get("client_name", "")
-        try:
-            result = seed_test_booking_and_send(phone, name)
+            result = run_full_assisted_test(phone, name, force_new_cooperator=force_new)
         except (PermissionError, ValueError) as exc:
             flash(str(exc))
             return redirect(url_for("configuracoes"))
         except (RuntimeError, requests.RequestException) as exc:
-            logger.exception("Erro ao enviar escala de teste: %s", exc)
-            flash(f"Falha ao enviar escala de teste: {exc}")
+            logger.exception("Erro ao rodar teste assistido completo: %s", exc)
+            flash(f"Falha no teste assistido: {exc}")
             return redirect(url_for("configuracoes"))
-        flash(f"Escala de teste {result['booking_id']} criada e enviada para {phone}.")
+        flash(f"Teste completo rodado: escala {result['booking_id']} criada e enviada para {phone}.")
+        return redirect(url_for("configuracoes"))
+
+    @app.post("/teste-assistido/resetar")
+    def teste_assistido_resetar():
+        phone = normalize_phone(request.form.get("phone", ""))
+        try:
+            counts = reset_test_phone(phone)
+        except ValueError as exc:
+            flash(str(exc))
+            return redirect(url_for("configuracoes"))
+        removidos = ", ".join(f"{k}: {v}" for k, v in counts.items() if v)
+        flash(f"Dados de teste resetados para {phone}." + (f" ({removidos})" if removidos else " (nada para apagar)"))
         return redirect(url_for("configuracoes"))
 
     @app.get("/policy")

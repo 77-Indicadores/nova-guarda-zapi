@@ -122,6 +122,36 @@ class AutomationTest(unittest.TestCase):
         appointment = self.storage.get_appointment("appointment-checkin")
         self.assertEqual(appointment["local_status"], "checkin_pending")
 
+    def test_automation_does_not_send_checkin_for_unconfirmed_booking(self):
+        from nova_guarda.timezone import br_now
+
+        self.accept_cooperator()
+        start_at = (br_now() + timedelta(minutes=30)).isoformat()
+        self.storage.upsert_booking(
+            {
+                "id": 597,
+                "name": "Cooperado Teste",
+                "booking_id": "booking-unconfirmed",
+                "schedule_status": "sent",
+                "phone": self.phone,
+                "today_appointment_id": "appointment-unconfirmed",
+                "appointments": [{"id": "appointment-unconfirmed", "start_at": start_at}],
+            },
+            local_status="sent",
+        )
+
+        with patch("nova_guarda.automation.list_pending_partner_bookings", return_value=[]), patch(
+            "nova_guarda.automation.retry_pending_gestao77_syncs",
+            return_value={"ok": True, "results": []},
+        ):
+            from nova_guarda.automation import run_automation_once
+
+            result = run_automation_once(month=8, year=2026)
+
+        self.assertEqual(result["checkins"], [])
+        booking = self.storage.get_booking("booking-unconfirmed")
+        self.assertEqual(booking["local_status"], "sent")
+
     def test_automation_sends_checkout_for_checked_in_appointment(self):
         from nova_guarda.timezone import br_now
 
