@@ -115,6 +115,14 @@ def init_db() -> None:
                 payload_json TEXT NOT NULL,
                 error TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS conversation_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                received_at TEXT NOT NULL,
+                event_type TEXT,
+                phone TEXT,
+                payload_json TEXT NOT NULL
+            );
             """
         )
         ensure_column(conn, "bookings", "provider", "TEXT")
@@ -819,6 +827,34 @@ def list_sync_events(limit: int = 100) -> list[dict[str, Any]]:
     return [row_to_sync_event(row) for row in rows]
 
 
+def save_conversation_event(event: dict[str, Any]) -> dict[str, Any]:
+    init_db()
+    payload = event.get("payload") or {}
+    received_at = str(event.get("received_at") or timestamp())
+    event_type = str(payload.get("type") or "")
+    phone = str(payload.get("phone") or "")
+    with connect() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO conversation_events (received_at, event_type, phone, payload_json)
+            VALUES (?, ?, ?, ?)
+            """,
+            (received_at, event_type, phone, json.dumps(payload, ensure_ascii=False, default=str)),
+        )
+        row = conn.execute("SELECT * FROM conversation_events WHERE id = ?", (cursor.lastrowid,)).fetchone()
+    return row_to_conversation_event(row)
+
+
+def list_conversation_events(limit: int = 120) -> list[dict[str, Any]]:
+    init_db()
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM conversation_events ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [row_to_conversation_event(row) for row in rows]
+
+
 def dashboard_metrics() -> dict[str, Any]:
     init_db()
     with connect() as conn:
@@ -931,6 +967,12 @@ def row_to_sync_event(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def row_to_poller_run(row: sqlite3.Row) -> dict[str, Any]:
+    data = dict(row)
+    data["payload"] = json.loads(data.pop("payload_json") or "{}")
+    return data
+
+
+def row_to_conversation_event(row: sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     data["payload"] = json.loads(data.pop("payload_json") or "{}")
     return data

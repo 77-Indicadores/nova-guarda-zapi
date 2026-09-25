@@ -64,6 +64,17 @@ class OnboardingFlowTest(unittest.TestCase):
         self.assertEqual(cooperator["onboarding_status"], "terms_sent")
         self.assertEqual(cooperator["partner_name"], "Cooperado Teste")
 
+    def test_activation_persists_conversation_events(self):
+        import nova_guarda.storage as storage
+
+        response = self.send_message("13 99919-9293", "ativar")
+
+        self.assertEqual(response.status_code, 200)
+        events = storage.list_conversation_events(20)
+        self.assertTrue(events)
+        self.assertTrue(any(event["payload"].get("type") == "ReceivedCallback" for event in events))
+        self.assertTrue(any(event["payload"].get("type") == "AutoReply" for event in events))
+
     def test_terms_acceptance_activates_cooperator(self):
         self.send_message("13 99919-9293", "ativar")
         response = self.send_message("13 99919-9293", "terms_accept")

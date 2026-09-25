@@ -255,17 +255,22 @@ def append_fake_sent_message(phone: str, mode: str, message: str, response_paylo
         return
 
     fake_payload = response_payload.get("payload", {}) if isinstance(response_payload, dict) else {}
-    RECEIVED_EVENTS.appendleft(
-        {
-            "received_at": timestamp(),
-            "payload": {
-                "type": "AutoReply",
-                "phone": phone,
-                "mode": mode,
-                "text": {"message": message},
-                "buttons": fake_payload.get("buttons", []),
-                "options": fake_payload.get("options", []),
-                "response": response_payload,
-            },
-        }
-    )
+    event = {
+        "received_at": timestamp(),
+        "payload": {
+            "type": "AutoReply",
+            "phone": phone,
+            "mode": mode,
+            "text": {"message": message},
+            "buttons": fake_payload.get("buttons", []),
+            "options": fake_payload.get("options", []),
+            "response": response_payload,
+        },
+    }
+    RECEIVED_EVENTS.appendleft(event)
+    try:
+        from nova_guarda.storage import save_conversation_event
+
+        save_conversation_event(event)
+    except Exception:
+        logger.exception("Erro ao persistir mensagem fake enviada.")

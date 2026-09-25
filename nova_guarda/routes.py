@@ -47,9 +47,11 @@ from nova_guarda.storage import (
     init_db,
     list_appointments,
     list_bookings,
+    list_conversation_events,
     list_cooperators,
     list_poller_runs,
     list_sync_events,
+    save_conversation_event,
     set_settings,
     upsert_booking,
 )
@@ -133,10 +135,18 @@ from nova_guarda.services import (
 )
 
 
+def append_conversation_event(event: dict) -> None:
+    RECEIVED_EVENTS.appendleft(event)
+    try:
+        save_conversation_event(event)
+    except Exception as exc:
+        logger.exception("Erro ao persistir evento de conversa: %s", exc)
+
+
 def process_webhook_payload(payload: dict) -> None:
     payload = normalize_incoming_whatsapp_payload(payload)
     logger.info("Payload recebido do WhatsApp: %s", payload)
-    RECEIVED_EVENTS.appendleft(
+    append_conversation_event(
         {
             "received_at": br_timestamp(),
             "payload": payload,
@@ -156,7 +166,7 @@ def process_webhook_payload(payload: dict) -> None:
                 TERMS_STATE[phone] = terms_state_from_cooperator(phone)
                 if result.get("response"):
                     append_onboarding_reply(phone, result["status"], result.get("reply", ""), result.get("response"))
-                RECEIVED_EVENTS.appendleft(
+                append_conversation_event(
                     {
                         "received_at": br_timestamp(),
                         "payload": {
@@ -176,7 +186,7 @@ def process_webhook_payload(payload: dict) -> None:
                 result = accept_terms(phone, text)
                 TERMS_STATE[phone] = terms_state_from_cooperator(phone)
                 append_onboarding_reply(phone, result["status"], result.get("reply", ""), result.get("response"))
-                RECEIVED_EVENTS.appendleft(
+                append_conversation_event(
                     {
                         "received_at": br_timestamp(),
                         "payload": {
@@ -197,7 +207,7 @@ def process_webhook_payload(payload: dict) -> None:
                 result = reject_terms(phone, text)
                 TERMS_STATE[phone] = terms_state_from_cooperator(phone)
                 append_onboarding_reply(phone, result["status"], result.get("reply", ""), result.get("response"))
-                RECEIVED_EVENTS.appendleft(
+                append_conversation_event(
                     {
                         "received_at": br_timestamp(),
                         "payload": {
@@ -253,7 +263,7 @@ def process_webhook_payload(payload: dict) -> None:
             try:
                 reply = build_checkin_reply("location_received")
                 response_payload = send_zapi_text(phone, reply)
-                RECEIVED_EVENTS.appendleft(
+                append_conversation_event(
                     {
                         "received_at": br_timestamp(),
                         "payload": {
@@ -277,7 +287,7 @@ def process_webhook_payload(payload: dict) -> None:
                 reply = "Não consegui registrar sua resposta da escala agora. Fale com a equipe da Nova Guarda."
                 try:
                     response_payload = send_zapi_text(phone, reply)
-                    RECEIVED_EVENTS.appendleft(
+                    append_conversation_event(
                         {
                             "received_at": br_timestamp(),
                             "payload": {
@@ -299,7 +309,7 @@ def process_webhook_payload(payload: dict) -> None:
 
             try:
                 response_payload = send_zapi_text(phone, reply)
-                RECEIVED_EVENTS.appendleft(
+                append_conversation_event(
                     {
                         "received_at": br_timestamp(),
                         "payload": {
@@ -319,7 +329,7 @@ def process_webhook_payload(payload: dict) -> None:
                 appointment_id = checkin_decision.split(":", 1)[1]
                 try:
                     response_payload = send_zapi_late_buttons(phone, appointment_id)
-                    RECEIVED_EVENTS.appendleft(
+                    append_conversation_event(
                         {
                             "received_at": br_timestamp(),
                             "payload": {
@@ -338,7 +348,7 @@ def process_webhook_payload(payload: dict) -> None:
                 appointment_id = checkin_decision.split(":", 1)[1]
                 try:
                     response_payload = send_zapi_no_show_reasons(phone, appointment_id)
-                    RECEIVED_EVENTS.appendleft(
+                    append_conversation_event(
                         {
                             "received_at": br_timestamp(),
                             "payload": {
@@ -358,7 +368,7 @@ def process_webhook_payload(payload: dict) -> None:
                     local_result = record_local_late(phone, checkin_decision)
                     reply = f"Atraso de {local_result['late_minutes']} minutos registrado pela Nova Guarda."
                     response_payload = send_zapi_text(phone, reply)
-                    RECEIVED_EVENTS.appendleft(
+                    append_conversation_event(
                         {
                             "received_at": br_timestamp(),
                             "payload": {
@@ -384,7 +394,7 @@ def process_webhook_payload(payload: dict) -> None:
                     local_result = record_local_no_show(phone, checkin_decision)
                     reply = f"Não comparecimento registrado com motivo: {local_result['reason']}."
                     response_payload = send_zapi_text(phone, reply)
-                    RECEIVED_EVENTS.appendleft(
+                    append_conversation_event(
                         {
                             "received_at": br_timestamp(),
                             "payload": {
@@ -419,7 +429,7 @@ def process_webhook_payload(payload: dict) -> None:
                 reply = "Não consegui registrar sua presença agora. Fale com a equipe da Nova Guarda."
                 try:
                     response_payload = send_zapi_text(phone, reply)
-                    RECEIVED_EVENTS.appendleft(
+                    append_conversation_event(
                         {
                             "received_at": br_timestamp(),
                             "payload": {
@@ -450,7 +460,7 @@ def process_webhook_payload(payload: dict) -> None:
                     reply = "Check-in registrado com sucesso pela Nova Guarda."
                 response_payload = send_zapi_text(phone, reply)
 
-                RECEIVED_EVENTS.appendleft(
+                append_conversation_event(
                     {
                         "received_at": br_timestamp(),
                         "payload": {
@@ -537,7 +547,7 @@ def terms_state_from_cooperator(phone: str) -> dict:
 
 
 def append_onboarding_reply(phone: str, status: str, reply: str, response_payload: dict | None = None) -> None:
-    RECEIVED_EVENTS.appendleft(
+    append_conversation_event(
         {
             "received_at": br_timestamp(),
             "payload": {
@@ -719,7 +729,7 @@ def create_app() -> Flask:
         return render_template(
             "registros.html",
             sync_events=list_sync_events(120),
-            conversation_events=list(RECEIVED_EVENTS)[:120],
+            conversation_events=list_conversation_events(120),
             poller_runs=list_poller_runs(50),
         )
 
@@ -1002,7 +1012,7 @@ def create_app() -> Flask:
         except (RuntimeError, requests.RequestException, ValueError) as exc:
             logger.exception("Erro ao sincronizar localização/check-in no 77Gestão: %s", exc)
 
-        RECEIVED_EVENTS.appendleft(
+        append_conversation_event(
             {
                 "received_at": link["received_at"],
                 "payload": {
@@ -1021,7 +1031,7 @@ def create_app() -> Flask:
         )
         try:
             response_payload = send_zapi_text(phone, reply)
-            RECEIVED_EVENTS.appendleft(
+            append_conversation_event(
                 {
                     "received_at": br_timestamp(),
                     "payload": {
@@ -1040,7 +1050,7 @@ def create_app() -> Flask:
 
     @app.get("/api/events")
     def list_events():
-        return jsonify({"events": list(RECEIVED_EVENTS)}), 200
+        return jsonify({"events": list_conversation_events(120)}), 200
 
     @app.get("/api/agenda-status")
     def agenda_status():
@@ -1249,7 +1259,7 @@ def create_app() -> Flask:
             logger.exception("Erro ao enviar mensagem pela Z-API: %s", exc)
             return jsonify({"ok": False, "error": str(exc)}), 502
 
-        RECEIVED_EVENTS.appendleft(
+        append_conversation_event(
             {
                 "received_at": br_timestamp(),
                 "payload": {
