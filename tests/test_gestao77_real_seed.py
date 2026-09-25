@@ -113,6 +113,42 @@ class RealGestao77SeedTest(unittest.TestCase):
         self.assertEqual(booking["local_status"], "sent")
         self.assertEqual(booking["appointment_id"], "23")
 
+    def test_seed_booking_accepts_top_level_booking_id_fallback(self):
+        """Reproduz o bug real: a 77Gestão cria o appointment e o booking de
+        verdade (confirmado via GET logo em seguida), mas a resposta imediata
+        do POST /appointments às vezes não traz o objeto "booking" aninhado
+        populado ainda - só o booking_id solto no nível raiz do appointment.
+        Isso não pode ser tratado como falha: o booking já existe de verdade
+        na 77Gestão, criar de novo só geraria escalas órfãs."""
+        from nova_guarda.gestao77_service import seed_test_booking_and_send
+
+        self.storage.upsert_cooperator(
+            self.phone,
+            "accepted",
+            {"id": 602, "name": "Vinicius Moreira - Teste WhatsApp", "type": "cooperado", "active": 1},
+        )
+
+        fake_client = Mock()
+        fake_client.create_appointment.return_value = {
+            "status": "success",
+            "appointment": {
+                "id": 27,
+                "partner_id": 602,
+                "booking_id": 8,
+                "booking": None,
+            },
+        }
+        fake_client.update_booking_schedule_response.return_value = {"status": "success"}
+
+        with patch("nova_guarda.gestao77_service.Gestao77Client.from_env", return_value=fake_client):
+            result = seed_test_booking_and_send(self.phone, "Cliente Teste")
+
+        self.assertEqual(result["booking_id"], "8")
+        self.assertEqual(result["appointment_id"], "27")
+
+        booking = self.storage.get_booking("8")
+        self.assertEqual(booking["local_status"], "sent")
+
     def test_seed_booking_survives_gestao77_schedule_response_failure(self):
         """Reproduz o bug relatado: a 77Gestão cria o appointment normalmente,
         mas o endpoint de sincronização de status de volta (schedule-response)

@@ -671,7 +671,11 @@ def seed_test_booking_and_send(phone: str, client_name: str = "") -> dict[str, A
     appointment = result.get("appointment", result)
     appointment_id = str(appointment.get("id") or "").strip()
     booking_info = appointment.get("booking") or {}
-    booking_id = str(booking_info.get("id") or "").strip()
+    # A 77Gestão confirmadamente cria o booking (visto via GET logo em seguida),
+    # mas a resposta imediata do POST às vezes não traz o objeto "booking"
+    # aninhado ainda populado. Aceita também o booking_id no nível raiz do
+    # appointment como fallback antes de considerar isso uma falha real.
+    booking_id = str(booking_info.get("id") or appointment.get("booking_id") or "").strip()
     if not appointment_id or not booking_id:
         raise RuntimeError("77Gestão não retornou appointment_id/booking_id ao criar o appointment.")
 
