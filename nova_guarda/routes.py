@@ -1031,7 +1031,8 @@ def create_app() -> Flask:
     def teste_assistido_escala():
         phone = normalize_phone(request.form.get("phone", ""))
         try:
-            result = run_test_for_existing_cooperator(phone)
+            with _POLLER_LOCK:
+                result = run_test_for_existing_cooperator(phone)
         except (PermissionError, ValueError) as exc:
             flash(str(exc))
             return redirect(url_for("configuracoes"))
@@ -1106,7 +1107,8 @@ def create_app() -> Flask:
         name = request.form.get("client_name", "")
         force_new = request.form.get("cooperador_modo") == "novo"
         try:
-            result = run_full_assisted_test(phone, name, force_new_cooperator=force_new)
+            with _POLLER_LOCK:
+                result = run_full_assisted_test(phone, name, force_new_cooperator=force_new)
         except (PermissionError, ValueError) as exc:
             flash(str(exc))
             return redirect(url_for("configuracoes"))

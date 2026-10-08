@@ -366,6 +366,7 @@ class SelfHealingFlowTest(unittest.TestCase):
         response.status_code = 422
         client = self.real_client()
         client.update_booking_schedule_response.side_effect = requests.HTTPError("422 transição", response=response)
+        client.get_booking_status.return_value = "awaiting_approval"
 
         with patch("nova_guarda.gestao77_service.fake_gestao77_enabled", return_value=False), patch(
             "nova_guarda.gestao77_service.Gestao77Client.from_env", return_value=client
@@ -378,6 +379,57 @@ class SelfHealingFlowTest(unittest.TestCase):
         self.assertEqual(client.update_booking_schedule_response.call_count, 1)
         self.assertEqual(self.storage.get_booking("13")["gestao77_status"], "blocked:declined")
         self.assertEqual([alert["kind"] for alert in self.storage.list_alerts()], ["sync_rejected"])
+
+    def rejection(self):
+        import requests
+
+        response = requests.Response()
+        response.status_code = 422
+        return requests.HTTPError("422 transição", response=response)
+
+    def test_repeated_sent_is_not_a_divergence_when_77gestao_already_has_it(self):
+        from nova_guarda.gestao77_service import update_booking_schedule_response
+
+        self.create_booking("31", status="sent")
+        client = self.real_client()
+        client.update_booking_schedule_response.side_effect = self.rejection()
+        client.get_booking_status.return_value = "sent"
+
+        with patch("nova_guarda.gestao77_service.fake_gestao77_enabled", return_value=False), patch(
+            "nova_guarda.gestao77_service.Gestao77Client.from_env", return_value=client
+        ):
+            update_booking_schedule_response("31", "sent")
+
+        self.assertEqual(self.storage.get_booking("31")["gestao77_status"], "sent")
+        self.assertEqual(self.storage.list_alerts(), [])
+
+    def test_blocked_sync_is_rechecked_and_heals_itself(self):
+        from nova_guarda.gestao77_service import retry_pending_gestao77_syncs
+
+        # Estado real visto em produção: local confirmado, marcado como recusado
+        # pela 77Gestão, e lá a escala está "sent".
+        self.create_booking("31", status="confirmed")
+        self.storage.mark_sync_blocked("booking", "31", "confirmed")
+        self.storage.create_alert("sync_rejected", "booking", "31", "", "recusado")
+        client = self.real_client()
+        client.get_booking_status.return_value = "sent"
+        client.update_booking_schedule_response.side_effect = [self.rejection(), {"status": "success"}]
+
+        with patch("nova_guarda.gestao77_service.fake_gestao77_enabled", return_value=False), patch(
+            "nova_guarda.gestao77_service.Gestao77Client.from_env", return_value=client
+        ):
+            too_soon = retry_pending_gestao77_syncs()
+            with patch("nova_guarda.gestao77_service.br_now", return_value=self.now() + timedelta(minutes=20)):
+                later = retry_pending_gestao77_syncs()
+
+        self.assertEqual(too_soon["results"], [])
+        self.assertTrue(later["ok"])
+        self.assertEqual(
+            [call.args for call in client.update_booking_schedule_response.call_args_list],
+            [("31", "sent"), ("31", "confirmed")],
+        )
+        self.assertEqual(self.storage.get_booking("31")["gestao77_status"], "confirmed")
+        self.assertEqual(self.storage.auto_resolve_alerts(), 1)
 
     def test_transient_sync_failure_keeps_retrying_without_alert(self):
         from nova_guarda.gestao77_service import retry_pending_gestao77_syncs

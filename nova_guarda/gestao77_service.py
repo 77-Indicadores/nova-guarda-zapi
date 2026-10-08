@@ -35,6 +35,7 @@ from nova_guarda.storage import (
     get_cooperator,
     get_latest_appointment_by_phone,
     get_latest_booking_by_phone,
+    list_blocked_syncs,
     list_pending_appointment_syncs,
     list_pending_booking_syncs,
     mark_appointment_checkin_sent,
@@ -154,10 +155,10 @@ def update_booking_schedule_response(booking_id: int | str, status: str) -> dict
         if status != "sent" and booking.get("gestao77_status") not in BOOKING_SYNCED_STATUSES:
             # A 77Gestão só aceita confirmed/declined depois de sent. Se o
             # "sent" não chegou lá (falha anterior), reenvia na ordem.
-            sent_response = client.update_booking_schedule_response(str(booking_id), "sent")
+            sent_response = _post_booking_status(client, booking_id, "sent")
             mark_booking_synced(booking_id, "sent")
             save_sync_event("booking", booking_id, "schedule_response:sent", True, {"status": "sent"}, sent_response)
-        response = client.update_booking_schedule_response(str(booking_id), status)
+        response = _post_booking_status(client, booking_id, status)
         mark_booking_synced(booking_id, status)
         save_sync_event("booking", booking_id, f"schedule_response:{status}", True, request_payload, response)
         return response
@@ -165,6 +166,32 @@ def update_booking_schedule_response(booking_id: int | str, status: str) -> dict
         save_sync_event("booking", booking_id, f"schedule_response:{status}", False, request_payload, error=str(exc))
         block_rejected_sync("booking", booking_id, status, exc)
         raise
+
+
+BOOKING_STATUS_ORDER = {"awaiting_approval": 0, "awaiting_send": 1, "sent": 2, "confirmed": 3, "declined": 3}
+
+
+def _is_rejected_transition(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    return isinstance(exc, requests.HTTPError) and response is not None and response.status_code == 422
+
+
+def _post_booking_status(client: Gestao77Client, booking_id: int | str, status: str) -> dict[str, Any]:
+    """Envia o status da escala. Se a 77Gestão recusar a transição, confere o
+    status que está lá: quando ela já está nesse status (ou adiante, no caso
+    de "sent"), a recusa é só um envio repetido e conta como sincronizado."""
+    try:
+        return client.update_booking_schedule_response(str(booking_id), status)
+    except requests.HTTPError as exc:
+        if not _is_rejected_transition(exc):
+            raise
+        remote = client.get_booking_status(booking_id)
+        already_there = remote == status or (
+            status == "sent" and BOOKING_STATUS_ORDER.get(remote, -1) > BOOKING_STATUS_ORDER["sent"]
+        )
+        if not already_there:
+            raise
+        return {"status": "success", "idempotent": True, "remote_status": remote}
 
 
 def update_appointment_status(appointment_id: int | str, status: str, address: str = "") -> dict[str, Any]:
@@ -176,7 +203,17 @@ def update_appointment_status(appointment_id: int | str, status: str, address: s
         return response
 
     try:
-        response = Gestao77Client.from_env().update_appointment_status(str(appointment_id), status, address)
+        client = Gestao77Client.from_env()
+        try:
+            response = client.update_appointment_status(str(appointment_id), status, address)
+        except requests.HTTPError as exc:
+            # Recusa de um envio repetido: se a 77Gestão já tem esse check-in/out, está sincronizado.
+            if not _is_rejected_transition(exc):
+                raise
+            remote = client.get_appointment(appointment_id)
+            if not remote.get("checked_in_at" if status == "checked_in" else "checked_out_at"):
+                raise
+            response = {"status": "success", "idempotent": True}
         mark_appointment_synced(appointment_id, status)
         save_sync_event("appointment", appointment_id, f"status:{status}", True, request_payload, response)
         return response
@@ -190,8 +227,7 @@ def block_rejected_sync(entity_type: str, entity_id: int | str, status: str, exc
     """Erro 422 é a 77Gestão dizendo que a transição não é permitida: repetir
     não resolve. Tira da fila de retry e avisa a equipe, em vez de deixar o
     local e a 77Gestão divergindo em silêncio."""
-    response = getattr(exc, "response", None)
-    if not isinstance(exc, requests.HTTPError) or response is None or response.status_code != 422:
+    if not _is_rejected_transition(exc):
         return
     mark_sync_blocked(entity_type, entity_id, status)
     label = "Escala" if entity_type == "booking" else "Atendimento"
@@ -630,10 +666,16 @@ def record_local_no_show(phone: str, status: str) -> dict[str, Any]:
     }
 
 
+BLOCKED_SYNC_RECHECK_MINUTES = 15
+
+
 def retry_pending_gestao77_syncs() -> dict[str, Any]:
     results: list[dict[str, Any]] = []
+    # Recusas da 77Gestão saem da fila normal, mas são reconferidas de tempos em
+    # tempos: se a situação lá mudou (ou já estava certa), a divergência se desfaz sozinha.
+    recheck_before = (br_now() - timedelta(minutes=BLOCKED_SYNC_RECHECK_MINUTES)).isoformat(timespec="seconds")
 
-    for booking in list_pending_booking_syncs():
+    for booking in list_pending_booking_syncs() + list_blocked_syncs("booking", recheck_before):
         booking_id = booking["booking_id"]
         status = booking["local_status"]
         try:
@@ -642,7 +684,7 @@ def retry_pending_gestao77_syncs() -> dict[str, Any]:
         except Exception as exc:
             results.append({"entity_type": "booking", "entity_id": booking_id, "status": status, "ok": False, "error": str(exc)})
 
-    for appointment in list_pending_appointment_syncs():
+    for appointment in list_pending_appointment_syncs() + list_blocked_syncs("appointment", recheck_before):
         appointment_id = appointment["appointment_id"]
         status = appointment["local_status"]
         try:

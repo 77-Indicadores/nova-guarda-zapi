@@ -127,6 +127,20 @@ class Gestao77Client:
             ]
         return payload
 
+    def get_booking_status(self, booking_id: str | int) -> str:
+        """Status atual da escala na 77Gestão (vem junto dos appointments dela)."""
+        appointments = self.list_appointments_by_booking(booking_id).get("appointments") or []
+        for item in appointments:
+            booking = item.get("booking") if isinstance(item, dict) else None
+            if isinstance(booking, dict) and booking.get("status"):
+                return str(booking["status"])
+        return ""
+
+    def get_appointment(self, appointment_id: str | int) -> dict[str, Any]:
+        payload = self._get(f"/appointments/{appointment_id}")
+        appointment = payload.get("appointment", payload) if isinstance(payload, dict) else {}
+        return appointment if isinstance(appointment, dict) else {}
+
     def release_booking_for_send(self, booking_id: str | int) -> dict[str, Any]:
         """Mesmo passo do botão "Enviar escala" da 77Gestão: leva a escala de
         "aguardando aprovação" para "aguardando envio", único status a partir

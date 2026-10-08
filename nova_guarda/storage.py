@@ -1328,10 +1328,17 @@ def auto_resolve_alerts() -> int:
     (ex.: o cooperado respondeu depois do alerta)."""
     resolved = 0
     for alert in list_alerts(open_only=True, limit=500):
-        if not alert.get("entity_status") or alert["entity_type"] not in ENTITY_TABLES:
+        if alert["entity_type"] not in ENTITY_TABLES:
             continue
         getter = get_booking if alert["entity_type"] == "booking" else get_appointment
         entity = getter(alert["entity_id"])
+        if alert["kind"] == "sync_rejected":
+            if entity and not str(entity.get("gestao77_status") or "").startswith("blocked:"):
+                resolve_alert(alert["id"])
+                resolved += 1
+            continue
+        if not alert.get("entity_status"):
+            continue
         if entity and entity.get("local_status") != alert["entity_status"]:
             resolve_alert(alert["id"])
             resolved += 1
@@ -1414,3 +1421,21 @@ def list_conversation_events_for_phone(phone: str, limit: int = 200) -> list[dic
             (phone, limit),
         ).fetchall()
     return [row_to_conversation_event(row) for row in rows]
+
+
+def list_blocked_syncs(entity_type: str, updated_before: str) -> list[dict[str, Any]]:
+    """Sincronizações recusadas pela 77Gestão cuja última tentativa já é antiga
+    o bastante para valer uma nova conferência."""
+    init_db()
+    table, _ = ENTITY_TABLES[entity_type]
+    with connect() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT * FROM {table}
+            WHERE SUBSTR(COALESCE(gestao77_status, ''), 1, 8) = 'blocked:'
+              AND updated_at < ?
+            ORDER BY updated_at ASC
+            """,
+            (updated_before,),
+        ).fetchall()
+    return [(row_to_booking if entity_type == "booking" else row_to_appointment)(row) for row in rows]
