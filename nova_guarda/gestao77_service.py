@@ -410,6 +410,8 @@ def sync_checkin_location_for_phone(phone: str, latitude: Any, longitude: Any, a
 
 
 APPOINTMENTS_REFRESH_MINUTES = 60
+TEST_SHIFT_MINUTES = 5
+TEST_SHIFT_MAX_ATTEMPTS = 6
 
 
 def refresh_booking_appointments(booking: dict[str, Any]) -> dict[str, Any]:
@@ -799,29 +801,37 @@ def seed_test_booking_and_send(phone: str, client_name: str = "", customer_name:
     if not partner_id:
         raise RuntimeError("Cooperado sem partner_id da 77Gestão. Recrie o cooperado de teste.")
 
-    start = br_now().astimezone(timezone.utc)
+    client = Gestao77Client.from_env()
+    now = br_now().astimezone(timezone.utc)
     # Janela curta de propósito: isso é dado de teste assistido, feito para
     # demonstração ao vivo. Um turno real duraria horas, mas aí o check-out
     # automático (via poller) só ficaria elegível bem depois do fim do turno,
     # o que inviabiliza testar o ciclo completo em uma apresentação.
-    end = start + timedelta(minutes=5)
-    start_at = start.strftime("%Y-%m-%dT%H:%M:%SZ")
-    end_at = end.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    payload = {
-        "partner_id": int(partner_id),
-        "customer_id": int(GESTAO77_TEST_CUSTOMER_ID),
-        "start_at": start_at,
-        "end_at": end_at,
-        "notes": f"Teste assistido Nova Guarda - {client_name.strip() or 'Cliente Teste'}",
-        "type": "appointment",
-    }
-    client = Gestao77Client.from_env()
-    try:
-        result = client.create_appointment(payload)
-    except (RuntimeError, requests.RequestException) as exc:
-        save_sync_event("cooperator", phone, "teste_assistido:seed_booking_real", False, payload, error=str(exc))
-        raise
+    duration = timedelta(minutes=TEST_SHIFT_MINUTES)
+    result: dict[str, Any] = {}
+    for attempt in range(TEST_SHIFT_MAX_ATTEMPTS):
+        # A 77Gestão recusa atendimento em horário que o cooperado já tem outro
+        # (mesmo de escala recusada). O teste anterior dura poucos minutos,
+        # então o novo é encaixado logo depois dele.
+        start = now + attempt * (duration + timedelta(seconds=10))
+        start_at = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+        end_at = (start + duration).strftime("%Y-%m-%dT%H:%M:%SZ")
+        payload = {
+            "partner_id": int(partner_id),
+            "customer_id": int(GESTAO77_TEST_CUSTOMER_ID),
+            "start_at": start_at,
+            "end_at": end_at,
+            "notes": f"Teste assistido Nova Guarda - {client_name.strip() or 'Cliente Teste'}",
+            "type": "appointment",
+        }
+        try:
+            result = client.create_appointment(payload)
+            break
+        except (RuntimeError, requests.RequestException) as exc:
+            if "agendamento neste hor" in str(exc) and attempt < TEST_SHIFT_MAX_ATTEMPTS - 1:
+                continue
+            save_sync_event("cooperator", phone, "teste_assistido:seed_booking_real", False, payload, error=str(exc))
+            raise
     appointment = result.get("appointment", result)
     appointment_id = str(appointment.get("id") or "").strip()
     booking_info = appointment.get("booking") or {}

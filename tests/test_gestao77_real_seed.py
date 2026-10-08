@@ -195,6 +195,38 @@ class RealGestao77SeedTest(unittest.TestCase):
         self.assertEqual(booking["local_status"], "sent")
         self.assertTrue(booking["sent_at"])
 
+    def test_seed_booking_moves_after_an_overlapping_appointment(self):
+        """A 77Gestão recusa atendimento sobreposto (mesmo de escala recusada):
+        o teste seguinte é encaixado depois, em vez de falhar."""
+        import requests
+
+        from nova_guarda.gestao77_service import seed_test_booking_and_send
+
+        self.storage.upsert_cooperator(
+            self.phone,
+            "accepted",
+            {"id": 603, "name": "TESTE Codex Cooperado", "type": "cooperado", "active": 1},
+        )
+        overlap = requests.HTTPError(
+            '400 Client Error | resposta: {"message":"O cooperado j\\u00e1 possui um agendamento neste hor\\u00e1rio."}'
+        )
+        fake_client = Mock()
+        fake_client.release_booking_for_send.return_value = {"status": "success"}
+        fake_client.update_booking_schedule_response.return_value = {"status": "success"}
+        fake_client.create_appointment.side_effect = [
+            overlap,
+            overlap,
+            {"appointment": {"id": 40, "booking_id": 20, "booking": {"id": 20, "status": "awaiting_approval"}}},
+        ]
+
+        with patch("nova_guarda.gestao77_service.Gestao77Client.from_env", return_value=fake_client):
+            result = seed_test_booking_and_send(self.phone, "Cliente Teste")
+
+        self.assertEqual(result["booking_id"], "20")
+        starts = [call.args[0]["start_at"] for call in fake_client.create_appointment.call_args_list]
+        self.assertEqual(len(starts), 3)
+        self.assertEqual(starts, sorted(set(starts)))
+
     def test_seed_booking_without_partner_id_is_rejected(self):
         from nova_guarda.gestao77_service import seed_test_booking_and_send
 
