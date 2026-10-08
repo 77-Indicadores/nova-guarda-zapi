@@ -194,12 +194,12 @@ class MetaTemplatesTest(unittest.TestCase):
         send_checkin_to_partner("9001", self.phone, agenda_data_from_booking(booking), booking_id="880")
 
         checkin = self.sent[-1]
-        self.assertEqual(self.template(checkin)["name"], "nova_guarda_checkin_atendimento_v2")
+        self.assertEqual(self.template(checkin)["name"], "nova_guarda_checkin_atendimento_v3")
         self.assertEqual(
             self.button_payloads(checkin),
             ["checkin2_arrived:9001", "checkin_late:9001", "checkin_not_going:9001"],
         )
-        self.assertEqual(len(self.body_texts(checkin)), 5)
+        self.assertEqual(self.body_texts(checkin), ["Cooperado Teste", "08/10/2026", "13:00 às 19:00", "Cliente X"])
 
         self.storage.mark_appointment_location_pending("9001")
         self.storage.transition_appointment_checkin("9001")
@@ -209,7 +209,6 @@ class MetaTemplatesTest(unittest.TestCase):
         self.assertEqual(self.template(checkout)["name"], "nova_guarda_checkout_atendimento_v3")
         self.assertEqual(self.button_payloads(checkout), ["checkout_confirm:9001"])
         self.assertEqual(self.body_texts(checkout), ["Cooperado Teste", "08/10/2026", "13:00 às 19:00", "Cliente X"])
-        self.assertEqual(self.body_texts(checkin)[3], "13:00 às 19:00")
 
     def test_terms_outside_window_use_only_the_template(self):
         from nova_guarda.onboarding import send_terms_to_phone

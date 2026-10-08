@@ -320,7 +320,7 @@ def send_zapi_checkin_options(
         return send_meta_template(
             phone,
             WHATSAPP_TEMPLATE_CHECKIN,
-            schedule_template_parameters(agenda_data),
+            schedule_template_parameters(agenda_data, with_address=False),
             [option["id"] for option in options],
         )
 
