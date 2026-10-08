@@ -295,6 +295,83 @@ class SelfHealingFlowTest(unittest.TestCase):
 
         self.assertIn("Alerta de teste visível", html)
 
+    # integração 77Gestão ------------------------------------------------------
+    def real_client(self):
+        from unittest.mock import Mock
+
+        return Mock()
+
+    def test_appointments_of_other_bookings_are_filtered_out(self):
+        from nova_guarda.clients.gestao77 import Gestao77Client
+
+        everything = {
+            "appointments": [
+                {"id": 1, "booking_id": 1},
+                {"id": 32, "booking_id": 13},
+                {"id": 2, "booking_id": 1},
+            ]
+        }
+        with patch.object(Gestao77Client, "_get", return_value=everything):
+            result = Gestao77Client(token="x").list_appointments_by_booking(13)
+
+        self.assertEqual([item["id"] for item in result["appointments"]], [32])
+
+    def test_only_released_bookings_with_booking_id_are_imported(self):
+        from nova_guarda.clients.gestao77 import Gestao77Client
+        from nova_guarda.gestao77_service import PENDING_SCHEDULE_STATUSES
+
+        summary = {
+            "cooperative_members": [
+                {"id": 601, "booking_id": None, "schedule_status": "awaiting_approval"},
+                {"id": 602, "booking_id": 13, "schedule_status": "awaiting_approval"},
+                {"id": 697, "booking_id": 11, "schedule_status": "awaiting_send"},
+                {"id": 698, "booking_id": None, "schedule_status": "awaiting_send"},
+            ]
+        }
+        with patch.object(Gestao77Client, "_get", return_value=summary):
+            members = Gestao77Client(token="x").list_partner_bookings_by_status(10, 2026, PENDING_SCHEDULE_STATUSES)
+
+        self.assertEqual([member["booking_id"] for member in members], [11])
+
+    def test_rejected_transition_stops_retrying_and_alerts(self):
+        import requests
+
+        from nova_guarda.gestao77_service import retry_pending_gestao77_syncs
+
+        self.create_booking("13", status="declined")
+        response = requests.Response()
+        response.status_code = 422
+        client = self.real_client()
+        client.update_booking_schedule_response.side_effect = requests.HTTPError("422 transição", response=response)
+
+        with patch("nova_guarda.gestao77_service.fake_gestao77_enabled", return_value=False), patch(
+            "nova_guarda.gestao77_service.Gestao77Client.from_env", return_value=client
+        ):
+            first = retry_pending_gestao77_syncs()
+            second = retry_pending_gestao77_syncs()
+
+        self.assertFalse(first["ok"])
+        self.assertEqual(second["results"], [])
+        self.assertEqual(client.update_booking_schedule_response.call_count, 1)
+        self.assertEqual(self.storage.get_booking("13")["gestao77_status"], "blocked:declined")
+        self.assertEqual([alert["kind"] for alert in self.storage.list_alerts()], ["sync_rejected"])
+
+    def test_transient_sync_failure_keeps_retrying_without_alert(self):
+        from nova_guarda.gestao77_service import retry_pending_gestao77_syncs
+
+        self.create_booking("13", status="sent")
+        client = self.real_client()
+        client.update_booking_schedule_response.side_effect = RuntimeError("77 fora")
+
+        with patch("nova_guarda.gestao77_service.fake_gestao77_enabled", return_value=False), patch(
+            "nova_guarda.gestao77_service.Gestao77Client.from_env", return_value=client
+        ):
+            retry_pending_gestao77_syncs()
+            retry_pending_gestao77_syncs()
+
+        self.assertEqual(client.update_booking_schedule_response.call_count, 2)
+        self.assertEqual(self.storage.list_alerts(), [])
+
     # 6. mês seguinte ------------------------------------------------------------
     def test_cycle_also_imports_next_month_bookings(self):
         from nova_guarda.timezone import br_now

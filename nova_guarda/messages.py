@@ -1,4 +1,7 @@
+from datetime import datetime
 from typing import Any
+
+from nova_guarda.timezone import BR_TZ
 
 
 def normalize_phone(value: str) -> str:
@@ -23,11 +26,26 @@ def get_payload_text(payload: dict[str, Any]) -> str:
     return ""
 
 
+def format_schedule(data: dict[str, str]) -> tuple[str, str]:
+    """Data e horário legíveis para o cooperado. A 77Gestão costuma mandar só o
+    início do atendimento em ISO/UTC (ex.: 2026-10-08T16:58:35Z)."""
+    date_text = str(data.get("schedule_date") or "").strip()
+    time_text = str(data.get("schedule_time") or "").strip()
+    try:
+        parsed = datetime.fromisoformat(date_text.replace("Z", "+00:00"))
+    except ValueError:
+        return date_text, time_text
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(BR_TZ)
+    return parsed.strftime("%d/%m/%Y"), time_text or parsed.strftime("%H:%M")
+
+
 def build_agenda_message(data: dict[str, str]) -> str:
     client = data.get("client_name") or "cooperado(a)"
     address = data.get("client_address") or "Endereço não informado"
-    date = data.get("schedule_date") or "Data não informada"
-    time = data.get("schedule_time") or "Horário não informado"
+    date, time = format_schedule(data)
+    date = date or "Data não informada"
+    time = time or "Horário não informado"
     service = data.get("service") or "Atendimento Nova Guarda"
 
     return (
@@ -44,8 +62,9 @@ def build_agenda_message(data: dict[str, str]) -> str:
 def build_checkin_message(data: dict[str, str]) -> str:
     client = data.get("client_name") or "cooperado(a)"
     address = data.get("client_address") or "Endereço não informado"
-    date = data.get("schedule_date") or "Data não informada"
-    time = data.get("schedule_time") or "Horário não informado"
+    date, time = format_schedule(data)
+    date = date or "Data não informada"
+    time = time or "Horário não informado"
     service = data.get("service") or "Atendimento Nova Guarda"
 
     return (

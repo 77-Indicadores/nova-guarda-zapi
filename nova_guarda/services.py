@@ -16,7 +16,7 @@ from nova_guarda.config import (
     WHATSAPP_TEMPLATE_TERMS,
 )
 from nova_guarda.flows import agenda_status_label, checkin_status_label, next_agenda_status
-from nova_guarda.messages import build_terms_buttons_message
+from nova_guarda.messages import build_terms_buttons_message, format_schedule
 from nova_guarda.state import AGENDA_STATE, RECEIVED_EVENTS
 from nova_guarda.timezone import BR_TZ, br_now, br_timestamp
 
@@ -80,16 +80,8 @@ def template_text(value: Any, fallback: str = "Não informado") -> str:
 
 
 def template_schedule(agenda_data: dict[str, str]) -> tuple[str, str]:
-    """Data e horário legíveis; a 77Gestão costuma mandar só o início em ISO."""
-    date_text = str(agenda_data.get("schedule_date") or "").strip()
-    time_text = str(agenda_data.get("schedule_time") or "").strip()
-    try:
-        parsed = datetime.fromisoformat(date_text.replace("Z", "+00:00"))
-    except ValueError:
-        return template_text(date_text), template_text(time_text)
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(BR_TZ)
-    return parsed.strftime("%d/%m/%Y"), time_text or parsed.strftime("%H:%M")
+    date_text, time_text = format_schedule(agenda_data)
+    return template_text(date_text), template_text(time_text)
 
 
 def send_meta_template(phone: str, name: str, body_parameters: list[str], button_payloads: list[str]) -> dict[str, Any]:

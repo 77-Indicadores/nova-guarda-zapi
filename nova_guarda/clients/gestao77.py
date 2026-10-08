@@ -75,7 +75,11 @@ class Gestao77Client:
         return [
             member
             for member in members
-            if isinstance(member, dict) and str(member.get("schedule_status", "")) in statuses
+            # O resumo lista todos os cooperados, inclusive quem não tem escala
+            # no mês (booking_id nulo): só interessa quem tem booking de fato.
+            if isinstance(member, dict)
+            and member.get("booking_id")
+            and str(member.get("schedule_status", "")) in statuses
         ]
 
     def update_appointment_status(self, appointment_id: str, status: str, address: str = "") -> dict[str, Any]:
@@ -109,7 +113,27 @@ class Gestao77Client:
         return self._post("/appointments", payload)
 
     def list_appointments_by_booking(self, booking_id: str | int) -> dict[str, Any]:
-        return self._get(f"/appointments?booking_id={booking_id}&skipLoader=1")
+        """A 77Gestão ignora o filtro booking_id e devolve os appointments de
+        todas as escalas (confirmado contra a API real), então o filtro é
+        refeito aqui: sem isso uma escala herdaria atendimentos de outros
+        cooperados."""
+        payload = self._get(f"/appointments?booking_id={booking_id}&skipLoader=1")
+        appointments = payload.get("appointments") if isinstance(payload, dict) else None
+        if isinstance(appointments, list):
+            payload["appointments"] = [
+                item
+                for item in appointments
+                if isinstance(item, dict) and str(item.get("booking_id")) == str(booking_id)
+            ]
+        return payload
+
+    def release_booking_for_send(self, booking_id: str | int) -> dict[str, Any]:
+        """Mesmo passo do botão "Enviar escala" da 77Gestão: leva a escala de
+        "aguardando aprovação" para "aguardando envio", único status a partir
+        do qual ela aceita sent/confirmed/declined."""
+        return self._request(
+            "PUT", f"/bookings/{booking_id}/cooperative-member-schedule-status", {"status": "awaiting_send"}
+        )
 
     def _get(self, path: str) -> dict[str, Any]:
         if not self.base_url:
@@ -129,12 +153,16 @@ class Gestao77Client:
         return response.json()
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", path, payload)
+
+    def _request(self, method: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         if not self.base_url:
             raise RuntimeError("GESTAO77_BASE_URL não configurado.")
         if not self.token:
             raise RuntimeError("Configure GESTAO77_TOKEN ou GESTAO77_EMAIL/GESTAO77_PASSWORD.")
 
-        response = requests.post(
+        response = requests.request(
+            method,
             f"{self.base_url}{path}",
             headers={
                 "Authorization": f"Bearer {self.token}",

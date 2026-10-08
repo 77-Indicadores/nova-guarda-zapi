@@ -5,6 +5,7 @@ from typing import Any
 
 import requests
 
+from nova_guarda.alerts import raise_alert
 from nova_guarda.clients import Gestao77Client
 from nova_guarda.config import GESTAO77_TEST_CUSTOMER_ID, GESTAO77_TEST_SERVICE_ID
 from nova_guarda.flows import agenda_status_label
@@ -34,6 +35,7 @@ from nova_guarda.storage import (
     mark_appointment_synced,
     mark_booking_synced,
     mark_booking_whatsapp_sent,
+    mark_sync_blocked,
     save_sync_event,
     transition_booking_response,
     transition_appointment_checkin,
@@ -47,7 +49,11 @@ from nova_guarda.storage import (
 from nova_guarda.timezone import BR_TZ, br_now
 
 
-PENDING_SCHEDULE_STATUSES = {"awaiting_send", "awaiting_approval"}
+# Só "aguardando envio" é a deixa para o bot. "awaiting_approval" é escala
+# ainda não liberada pela equipe na 77Gestão (e é o status padrão de quem nem
+# tem escala no mês): a API recusa sent/confirmed/declined a partir dele.
+PENDING_SCHEDULE_STATUSES = {"awaiting_send"}
+BOOKING_SYNCED_STATUSES = {"sent", "confirmed", "declined"}
 BOOKING_FINAL_STATUSES = {"confirmed", "declined"}
 
 
@@ -130,12 +136,21 @@ def update_booking_schedule_response(booking_id: int | str, status: str) -> dict
         return response
 
     try:
-        response = Gestao77Client.from_env().update_booking_schedule_response(str(booking_id), status)
+        client = Gestao77Client.from_env()
+        booking = get_booking(booking_id) or {}
+        if status != "sent" and booking.get("gestao77_status") not in BOOKING_SYNCED_STATUSES:
+            # A 77Gestão só aceita confirmed/declined depois de sent. Se o
+            # "sent" não chegou lá (falha anterior), reenvia na ordem.
+            sent_response = client.update_booking_schedule_response(str(booking_id), "sent")
+            mark_booking_synced(booking_id, "sent")
+            save_sync_event("booking", booking_id, "schedule_response:sent", True, {"status": "sent"}, sent_response)
+        response = client.update_booking_schedule_response(str(booking_id), status)
         mark_booking_synced(booking_id, status)
         save_sync_event("booking", booking_id, f"schedule_response:{status}", True, request_payload, response)
         return response
     except Exception as exc:
         save_sync_event("booking", booking_id, f"schedule_response:{status}", False, request_payload, error=str(exc))
+        block_rejected_sync("booking", booking_id, status, exc)
         raise
 
 
@@ -154,7 +169,27 @@ def update_appointment_status(appointment_id: int | str, status: str, address: s
         return response
     except Exception as exc:
         save_sync_event("appointment", appointment_id, f"status:{status}", False, request_payload, error=str(exc))
+        block_rejected_sync("appointment", appointment_id, status, exc)
         raise
+
+
+def block_rejected_sync(entity_type: str, entity_id: int | str, status: str, exc: Exception) -> None:
+    """Erro 422 é a 77Gestão dizendo que a transição não é permitida: repetir
+    não resolve. Tira da fila de retry e avisa a equipe, em vez de deixar o
+    local e a 77Gestão divergindo em silêncio."""
+    response = getattr(exc, "response", None)
+    if not isinstance(exc, requests.HTTPError) or response is None or response.status_code != 422:
+        return
+    mark_sync_blocked(entity_type, entity_id, status)
+    label = "Escala" if entity_type == "booking" else "Atendimento"
+    raise_alert(
+        "sync_rejected",
+        entity_type,
+        entity_id,
+        "",
+        f"{label} {entity_id}: a 77Gestão recusou o status {status}. O registro local e a 77Gestão estão "
+        f"diferentes e precisam de ajuste manual lá. Detalhe: {str(exc)[-200:]}",
+    )
 
 
 def fake_gestao77_enabled() -> bool:
@@ -720,7 +755,7 @@ def seed_test_cooperator(phone: str, name: str = "") -> dict[str, Any]:
     return cooperator
 
 
-def seed_test_booking_and_send(phone: str, client_name: str = "") -> dict[str, Any]:
+def seed_test_booking_and_send(phone: str, client_name: str = "", customer_name: str = "") -> dict[str, Any]:
     """Cria uma escala + appointment de teste e já dispara a mensagem de agenda
     pelo WhatsApp configurado (real ou fake, conforme DEV_FAKE_ZAPI/provider).
     Em modo fake, monta tudo localmente com IDs sintéticos. Fora do modo fake,
@@ -750,7 +785,7 @@ def seed_test_booking_and_send(phone: str, client_name: str = "") -> dict[str, A
                     {
                         "id": appointment_id,
                         "start_at": start_at,
-                        "customer": {"name": client_name.strip() or "Cliente Teste"},
+                        "customer": {"name": customer_name.strip() or client_name.strip() or "Cliente Teste"},
                     }
                 ],
             },
@@ -790,6 +825,18 @@ def seed_test_booking_and_send(phone: str, client_name: str = "") -> dict[str, A
     appointment = result.get("appointment", result)
     appointment_id = str(appointment.get("id") or "").strip()
     booking_info = appointment.get("booking") or {}
+    created_booking_id = str(booking_info.get("id") or appointment.get("booking_id") or "").strip()
+    if created_booking_id:
+        # A escala nasce "aguardando aprovação"; sem liberar para envio a
+        # 77Gestão recusa sent/confirmed/declined e o teste nunca sincroniza.
+        release_request = {"status": "awaiting_send"}
+        try:
+            released = client.release_booking_for_send(created_booking_id)
+            save_sync_event("booking", created_booking_id, "teste_assistido:release_for_send", True, release_request, released)
+        except (RuntimeError, requests.RequestException) as exc:
+            save_sync_event(
+                "booking", created_booking_id, "teste_assistido:release_for_send", False, release_request, error=str(exc)
+            )
     # A 77Gestão confirmadamente cria o booking (visto via GET logo em seguida),
     # mas a resposta imediata do POST às vezes não traz o objeto "booking"
     # aninhado ainda populado. Aceita também o booking_id no nível raiz do
@@ -809,7 +856,7 @@ def seed_test_booking_and_send(phone: str, client_name: str = "") -> dict[str, A
                 {
                     "id": appointment_id,
                     "start_at": start_at,
-                    "customer": {"name": client_name.strip() or "Cliente Teste"},
+                    "customer": {"name": customer_name.strip() or client_name.strip() or "Cliente Teste"},
                 }
             ],
         },
@@ -866,7 +913,7 @@ def run_test_for_existing_cooperator(phone: str) -> dict[str, Any]:
         if not terms.get("ok"):
             raise ValueError(terms.get("error") or terms.get("reason") or "Não foi possível enviar o termo.")
         return {"action": "terms_sent", "phone": phone}
-    result = seed_test_booking_and_send(phone, cooperator.get("partner_name") or "")
+    result = seed_test_booking_and_send(phone, cooperator.get("partner_name") or "", customer_name="Cliente Teste")
     return {"action": "booking_sent", "phone": phone, **result}
 
 

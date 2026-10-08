@@ -810,6 +810,7 @@ def list_pending_booking_syncs() -> list[dict[str, Any]]:
             SELECT * FROM bookings
             WHERE local_status IN ('sent', 'confirmed', 'declined')
               AND COALESCE(gestao77_status, '') != local_status
+              AND SUBSTR(COALESCE(gestao77_status, ''), 1, 8) != 'blocked:'
             ORDER BY updated_at ASC
             """
         ).fetchall()
@@ -824,6 +825,7 @@ def list_pending_appointment_syncs() -> list[dict[str, Any]]:
             SELECT * FROM appointments
             WHERE local_status IN ('checked_in', 'checked_out')
               AND COALESCE(gestao77_status, '') != local_status
+              AND SUBSTR(COALESCE(gestao77_status, ''), 1, 8) != 'blocked:'
             ORDER BY updated_at ASC
             """
         ).fetchall()
@@ -1328,3 +1330,14 @@ def last_inbound_message_at(phone: str) -> str:
             (phone,),
         ).fetchone()
     return str(row["received_at"]) if row else ""
+
+
+def mark_sync_blocked(entity_type: str, entity_id: str | int, status: str) -> None:
+    """A 77Gestão recusou a transição em definitivo: sai da fila de retry (que
+    repetiria o mesmo erro a cada ciclo) e fica marcada para ação da equipe."""
+    table, key = ENTITY_TABLES[entity_type]
+    with connect() as conn:
+        conn.execute(
+            f"UPDATE {table} SET gestao77_status = ?, updated_at = ? WHERE {key} = ?",
+            (f"blocked:{status}", timestamp(), str(entity_id)),
+        )

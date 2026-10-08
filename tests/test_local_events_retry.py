@@ -199,5 +199,10 @@ class LocalEventsAndRetryTest(unittest.TestCase):
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(second.status_code, 200)
-        self.assertEqual(client.update_booking_schedule_response.call_count, 1)
+        # A escala confirmada nunca teve o "sent" sincronizado: a 77Gestão só
+        # aceita a resposta depois do envio, então os dois vão em ordem, uma vez.
+        self.assertEqual(
+            [call.args for call in client.update_booking_schedule_response.call_args_list],
+            [("booking-pending", "sent"), ("booking-pending", "confirmed")],
+        )
         self.assertEqual(client.update_appointment_status.call_count, 1)

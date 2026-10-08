@@ -83,6 +83,7 @@ class RealGestao77SeedTest(unittest.TestCase):
         )
 
         fake_client = Mock()
+        fake_client.release_booking_for_send.return_value = {"status": "success"}
         fake_client.create_appointment.return_value = {
             "status": "success",
             "appointment": {
@@ -101,6 +102,8 @@ class RealGestao77SeedTest(unittest.TestCase):
 
         self.assertEqual(result["booking_id"], "3")
         self.assertEqual(result["appointment_id"], "23")
+        # A escala de teste é liberada para envio antes do "sent", como no botão da 77Gestão.
+        fake_client.release_booking_for_send.assert_called_once_with("3")
 
         payload = fake_client.create_appointment.call_args[0][0]
         self.assertEqual(payload["partner_id"], 603)
@@ -129,6 +132,7 @@ class RealGestao77SeedTest(unittest.TestCase):
         )
 
         fake_client = Mock()
+        fake_client.release_booking_for_send.return_value = {"status": "success"}
         fake_client.create_appointment.return_value = {
             "status": "success",
             "appointment": {
@@ -165,6 +169,7 @@ class RealGestao77SeedTest(unittest.TestCase):
         )
 
         fake_client = Mock()
+        fake_client.release_booking_for_send.return_value = {"status": "success"}
         fake_client.create_appointment.return_value = {
             "status": "success",
             "appointment": {
