@@ -25,6 +25,7 @@ from nova_guarda.gestao77_service import (
     mark_appointment_checked_out,
     mark_booking_sent,
     request_checkin_location,
+    request_checkout_location,
     reset_test_phone,
     run_full_assisted_test,
     run_test_for_existing_cooperator,
@@ -200,6 +201,40 @@ def process_webhook_payload(payload: dict) -> None:
         raise
 
 
+def request_presence_location(phone: str, decision: str, checkout: bool) -> None:
+    try:
+        if checkout:
+            local_result = request_checkout_location(phone, decision)
+            reply = build_checkin_reply("checkout_location")
+        else:
+            local_result = request_checkin_location(phone, decision)
+            reply = build_checkin_reply("arrived")
+        reply_status = "location_requested"
+        response_payload = send_zapi_location_request(phone, reply)
+    except (PermissionError, KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
+        logger.exception("Erro ao solicitar localização de presença: %s", exc)
+        local_result = None
+        reply = "Não consegui registrar sua presença agora. Fale com a equipe da Nova Guarda."
+        reply_status = "presence_sync_error"
+        try:
+            response_payload = send_zapi_text(phone, reply)
+        except (RuntimeError, requests.RequestException, ValueError):
+            return
+    append_conversation_event(
+        {
+            "received_at": br_timestamp(),
+            "payload": {
+                "type": "AutoReply",
+                "phone": phone,
+                "status": reply_status,
+                "text": {"message": reply},
+                "local_event": local_result,
+                "response": response_payload,
+            },
+        }
+    )
+
+
 def reply_unrecognized_message(phone: str) -> None:
     """Mensagem que não é botão nem comando: em vez de silêncio, devolve o
     próximo passo do cooperado. Limitado por telefone para não virar spam."""
@@ -364,15 +399,17 @@ def handle_webhook_payload(payload: dict) -> None:
                 reply_status = "location_ignored"
                 reply = "Recebemos sua localização, mas não há check-in aguardando localização neste momento."
             else:
-                reply = f"Check-in registrado com sucesso pela Nova Guarda.\nLocal: {address}"
+                reply_status = str(sync_result.get("status") or "checked_in")
+                step = "Check-out" if reply_status == "checked_out" else "Check-in"
+                reply = f"{step} registrado com sucesso pela Nova Guarda.\nLocal: {address}"
                 state = AGENDA_STATE.setdefault(phone, {"phone": phone, "agenda": {}, "history": []})
-                state["status"] = "checked_in"
-                state["status_label"] = checkin_status_label("checked_in")
+                state["status"] = reply_status
+                state["status_label"] = checkin_status_label(reply_status)
                 state["location"] = location_payload
                 state["updated_at"] = br_timestamp()
                 state["appointment_id"] = str(sync_result.get("appointment_id", ""))
                 state.setdefault("history", []).append(
-                    {"at": state["updated_at"], "reply": "location", "to": "checked_in", "location": location_payload}
+                    {"at": state["updated_at"], "reply": "location", "to": reply_status, "location": location_payload}
                 )
 
             try:
@@ -549,100 +586,15 @@ def handle_webhook_payload(payload: dict) -> None:
                         pass
                 return
 
-            if checkin_decision in {"arrived", "arrived_link"} or checkin_decision.startswith(
+            is_arrival = checkin_decision in {"arrived", "arrived_link"} or checkin_decision.startswith(
                 ("checkin_arrived:", "checkin2_arrived:")
-            ):
-                # “Cheguei” não conclui o check-in: a localização do WhatsApp é
-                # obrigatória e só ela registra a presença na 77Gestão.
-                try:
-                    local_result = request_checkin_location(phone, checkin_decision)
-                    reply = build_checkin_reply("arrived")
-                    reply_status = "location_requested"
-                    response_payload = send_zapi_location_request(phone, reply)
-                except (PermissionError, KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
-                    logger.exception("Erro ao solicitar localização do check-in: %s", exc)
-                    local_result = None
-                    reply = "Não consegui registrar sua presença agora. Fale com a equipe da Nova Guarda."
-                    reply_status = "presence_sync_error"
-                    try:
-                        response_payload = send_zapi_text(phone, reply)
-                    except (RuntimeError, requests.RequestException, ValueError):
-                        return
-                append_conversation_event(
-                    {
-                        "received_at": br_timestamp(),
-                        "payload": {
-                            "type": "AutoReply",
-                            "phone": phone,
-                            "status": reply_status,
-                            "text": {"message": reply},
-                            "local_event": local_result,
-                            "response": response_payload,
-                        },
-                    }
-                )
-                return
-
-            if not checkin_decision.startswith("checkout_confirm:"):
-                # Respostas digitadas sem appointment (ex.: "vou atrasar") não
-                # identificam o atendimento; o cooperado usa os botões.
-                return
-
-            try:
-                appointment_id = checkin_decision.split(":", 1)[1]
-                sync_result = sync_appointment_checkout(appointment_id, event_id=checkin_decision)
-                next_status = "checked_out"
-            except (KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
-                logger.exception("Erro ao sincronizar presença no 77Gestão: %s", exc)
-                reply = "Não consegui registrar sua presença agora. Fale com a equipe da Nova Guarda."
-                try:
-                    response_payload = send_zapi_text(phone, reply)
-                    append_conversation_event(
-                        {
-                            "received_at": br_timestamp(),
-                            "payload": {
-                                "type": "AutoReply",
-                                "phone": phone,
-                                "status": "presence_sync_error",
-                                "text": {"message": reply},
-                                "response": response_payload,
-                            },
-                        }
-                    )
-                except (RuntimeError, requests.RequestException, ValueError) as send_exc:
-                    logger.exception("Erro ao enviar falha de presença: %s", send_exc)
-                return
-
-            state = AGENDA_STATE.setdefault(phone, {"phone": phone, "agenda": {}, "history": []})
-            state["status"] = next_status
-            state["status_label"] = checkin_status_label(next_status)
-            state["last_reply"] = text
-            state["updated_at"] = br_timestamp()
-            state["appointment_id"] = str(sync_result.get("appointment_id", state.get("appointment_id", "")))
-            state.setdefault("history", []).append({"at": state["updated_at"], "reply": text, "to": next_status})
-
-            try:
-                if next_status == "checked_out":
-                    reply = "Check-out registrado com sucesso pela Nova Guarda."
-                else:
-                    reply = "Check-in registrado com sucesso pela Nova Guarda."
-                response_payload = send_zapi_text(phone, reply)
-
-                append_conversation_event(
-                    {
-                        "received_at": br_timestamp(),
-                        "payload": {
-                            "type": "AutoReply",
-                            "phone": phone,
-                            "status": next_status,
-                            "text": {"message": reply},
-                            "gestao77_sync": sync_result,
-                            "response": response_payload,
-                        },
-                    }
-                )
-            except (RuntimeError, requests.RequestException, ValueError) as exc:
-                logger.exception("Erro ao enviar resposta automática de check-in: %s", exc)
+            )
+            if is_arrival or checkin_decision.startswith("checkout_confirm:"):
+                # “Cheguei” e “Finalizar” não concluem nada sozinhos: a localização
+                # do WhatsApp é obrigatória e só ela registra check-in/check-out.
+                request_presence_location(phone, checkin_decision, checkout=not is_arrival)
+            # Respostas digitadas sem appointment (ex.: "vou atrasar") não
+            # identificam o atendimento; o cooperado usa os botões.
 
         elif phone and not payload.get("isGroup"):
             reply_unrecognized_message(phone)
@@ -792,6 +744,8 @@ def status_label(status: str | None) -> str:
         "checkin_pending": "Check-in pendente",
         "checked_in": "Checked in",
         "checkout_pending": "Check-out pendente",
+        "location_pending": "Aguardando localização (check-in)",
+        "checkout_location_pending": "Aguardando localização (check-out)",
         "checked_out": "Checked out",
         "late_reported": "Atraso local",
         "no_show_reported": "Não vou local",

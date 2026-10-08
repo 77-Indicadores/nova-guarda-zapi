@@ -232,6 +232,9 @@ def init_db() -> None:
         ensure_column(conn, "appointments", "checkin_latitude", "TEXT")
         ensure_column(conn, "appointments", "checkin_longitude", "TEXT")
         ensure_column(conn, "appointments", "checkin_address", "TEXT")
+        ensure_column(conn, "appointments", "checkout_latitude", "TEXT")
+        ensure_column(conn, "appointments", "checkout_longitude", "TEXT")
+        ensure_column(conn, "appointments", "checkout_address", "TEXT")
 
 
 SETTING_DEFAULTS = {
@@ -636,13 +639,52 @@ def mark_appointment_location_pending(appointment_id: str | int) -> tuple[bool, 
     return True, get_appointment(appointment_id) or {}
 
 
+def mark_appointment_checkout_location_pending(appointment_id: str | int) -> tuple[bool, dict[str, Any]]:
+    """Cooperado disse que finalizou: o check-out só é concluído quando a
+    localização do WhatsApp chegar."""
+    init_db()
+    now = timestamp()
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM appointments WHERE appointment_id = ?", (str(appointment_id),)).fetchone()
+        if not row:
+            raise KeyError(f"Appointment {appointment_id} não encontrado.")
+        current = row["local_status"]
+        if current == "checkout_location_pending":
+            return False, row_to_appointment(row)
+        if current not in {"checked_in", "checkout_pending"}:
+            raise ValueError(f"Transição inválida: {current} -> checkout_location_pending")
+        conn.execute(
+            "UPDATE appointments SET local_status = 'checkout_location_pending', updated_at = ? WHERE appointment_id = ?",
+            (now, str(appointment_id)),
+        )
+    return True, get_appointment(appointment_id) or {}
+
+
+def save_appointment_checkout_location(
+    appointment_id: str | int,
+    latitude: Any,
+    longitude: Any,
+    address: str,
+) -> None:
+    init_db()
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE appointments
+            SET checkout_latitude = ?, checkout_longitude = ?, checkout_address = ?, updated_at = ?
+            WHERE appointment_id = ?
+            """,
+            (str(latitude), str(longitude), address, timestamp(), str(appointment_id)),
+        )
+
+
 def get_appointment_awaiting_location(phone: str) -> dict[str, Any] | None:
     init_db()
     with connect() as conn:
         row = conn.execute(
             """
             SELECT * FROM appointments
-            WHERE phone = ? AND local_status = 'location_pending'
+            WHERE phone = ? AND local_status IN ('location_pending', 'checkout_location_pending')
             ORDER BY updated_at DESC LIMIT 1
             """,
             (phone,),
@@ -683,7 +725,7 @@ def transition_appointment_checkout(appointment_id: str | int, event_id: str = "
     return transition_appointment_presence(
         appointment_id,
         target_status="checked_out",
-        allowed_from={"checked_in", "checkout_pending"},
+        allowed_from={"checkout_location_pending"},
         event_column="inbound_checkout_event_id",
         time_column="checked_out_at",
         event_id=event_id,

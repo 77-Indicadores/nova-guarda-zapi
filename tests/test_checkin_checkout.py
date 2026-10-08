@@ -259,14 +259,52 @@ class CheckinCheckoutFlowTest(unittest.TestCase):
         self.send_location()
         self.post_checkout_send()
 
-        response = self.send_reply(f"checkout_confirm:{self.appointment_id}")
+        self.send_reply(f"checkout_confirm:{self.appointment_id}")
+        self.send_reply(f"checkout_confirm:{self.appointment_id}")
+        pending = self.storage.get_appointment(self.appointment_id)
+        self.assertEqual(pending["local_status"], "checkout_location_pending")
+        self.assertEqual(self.sync_count(self.appointment_id, "checked_out"), 0)
+
+        response = self.send_location("Rua da Saída, 200 - Santos")
+        self.send_location("Rua da Saída, 200 - Santos")
 
         self.assertEqual(response.status_code, 200)
         appointment = self.storage.get_appointment(self.appointment_id)
         self.assertEqual(appointment["local_status"], "checked_out")
         self.assertEqual(appointment["gestao77_status"], "checked_out")
         self.assertTrue(appointment["checked_out_at"])
+        self.assertEqual(appointment["checkout_address"], "Rua da Saída, 200 - Santos")
+        self.assertEqual(appointment["checkin_address"], "Rua Teste, 100 - Santos")
         self.assertEqual(self.sync_count(self.appointment_id, "checked_out"), 1)
+
+    def test_finishing_without_location_gets_reminder_then_alert(self):
+        from datetime import timedelta
+
+        from nova_guarda.automation import run_automation_once
+        from nova_guarda.timezone import br_now
+
+        self.accept_cooperator()
+        self.create_booking()
+        self.post_checkin_send()
+        self.send_reply(f"checkin_arrived:{self.appointment_id}")
+        self.send_location()
+        self.post_checkout_send()
+        self.send_reply(f"checkout_confirm:{self.appointment_id}")
+        self.storage.set_settings({"terms_auto_enabled": "0"})
+
+        def cycle(minutes):
+            at = br_now() + timedelta(minutes=minutes)
+            with patch("nova_guarda.automation.br_now", return_value=at), patch(
+                "nova_guarda.storage.timestamp", return_value=at.isoformat(timespec="seconds")
+            ), patch("nova_guarda.automation.list_pending_partner_bookings", return_value=[]), patch(
+                "nova_guarda.automation.retry_pending_gestao77_syncs", return_value={"ok": True, "results": []}
+            ):
+                return run_automation_once(month=8, year=2026)["followups"]
+
+        self.assertEqual([item["action"] for item in cycle(20)], ["reminder"])
+        self.assertEqual([item["action"] for item in cycle(40)], ["alert"])
+        self.assertIn("finalizou", self.storage.list_alerts()[0]["message"])
+        self.assertEqual(self.storage.get_appointment(self.appointment_id)["local_status"], "checkout_location_pending")
 
     def test_old_click_does_not_change_current_appointment(self):
         old_id = "appointment-old"

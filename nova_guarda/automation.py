@@ -44,6 +44,7 @@ STALE_APPOINTMENT_MESSAGES = {
     "checkin_pending": "Check-in do atendimento {appointment_id} sem resposta de {phone} depois do lembrete (possível falta).",
     "location_pending": "{phone} disse que chegou ao atendimento {appointment_id}, mas não enviou a localização.",
     "checkout_pending": "Check-out do atendimento {appointment_id} sem resposta de {phone} depois do lembrete.",
+    "checkout_location_pending": "{phone} disse que finalizou o atendimento {appointment_id}, mas não enviou a localização.",
     "late_reported": "{phone} avisou atraso no atendimento {appointment_id} e não confirmou a chegada.",
 }
 

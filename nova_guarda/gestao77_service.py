@@ -27,11 +27,13 @@ from nova_guarda.storage import (
     list_pending_appointment_syncs,
     list_pending_booking_syncs,
     mark_appointment_checkin_sent,
+    mark_appointment_checkout_location_pending,
     mark_appointment_checkout_sent,
     mark_appointment_late,
     mark_appointment_location_pending,
     mark_appointment_no_show,
     save_appointment_checkin_location,
+    save_appointment_checkout_location,
     mark_appointment_synced,
     mark_booking_synced,
     mark_booking_whatsapp_sent,
@@ -405,8 +407,29 @@ def sync_checkin_location_for_phone(phone: str, latitude: Any, longitude: Any, a
     if not appointment:
         return None
     appointment_id = appointment["appointment_id"]
+    if appointment.get("local_status") == "checkout_location_pending":
+        save_appointment_checkout_location(appointment_id, latitude, longitude, address)
+        return sync_appointment_checkout(appointment_id, address=address, event_id="location")
     save_appointment_checkin_location(appointment_id, latitude, longitude, address)
     return sync_appointment_checkin(appointment_id, address=address, event_id="location")
+
+
+def request_checkout_location(phone: str, status: str) -> dict[str, Any]:
+    """Registra o “finalizei” e deixa o appointment aguardando a localização do
+    WhatsApp, que é obrigatória para concluir o check-out."""
+    phone = normalize_phone(phone)
+    appointment_id = appointment_id_from_checkin_status(status)
+    appointment = get_appointment(appointment_id) if appointment_id else None
+    if not appointment or normalize_phone(appointment.get("phone", "")) != phone:
+        raise PermissionError("Check-out não pertence a um appointment deste telefone.")
+    changed, stored = mark_appointment_checkout_location_pending(appointment_id)
+    return {
+        "appointment_id": str(appointment_id),
+        "booking_id": stored.get("booking_id", ""),
+        "phone": phone,
+        "status": "checkout_location_pending",
+        "idempotent": not changed,
+    }
 
 
 APPOINTMENTS_REFRESH_MINUTES = 60
@@ -462,8 +485,9 @@ def send_followup_reminder(entity_type: str, entity: dict[str, Any]) -> dict[str
             phone, message, use_location_link=True, appointment_id=appointment_id, agenda_data=agenda_data
         )
         append_fake_sent_message(phone, "checkin2", message, response)
-    elif status == "location_pending":
-        message = "Lembrete: envie sua localização atual por aqui para concluir o check-in."
+    elif status in {"location_pending", "checkout_location_pending"}:
+        step = "check-out" if status == "checkout_location_pending" else "check-in"
+        message = f"Lembrete: envie sua localização atual por aqui para concluir o {step}."
         response = send_zapi_location_request(phone, message)
         append_fake_sent_message(phone, "checkin2", message, response)
     elif status == "checkout_pending":
@@ -613,7 +637,7 @@ def retry_pending_gestao77_syncs() -> dict[str, Any]:
         appointment_id = appointment["appointment_id"]
         status = appointment["local_status"]
         try:
-            address = str(appointment.get("checkin_address") or "") if status == "checked_in" else ""
+            address = str(appointment.get("checkin_address" if status == "checked_in" else "checkout_address") or "")
             response = update_appointment_status(appointment_id, status, address)
             results.append({"entity_type": "appointment", "entity_id": appointment_id, "status": status, "ok": True, "response": response})
         except Exception as exc:
