@@ -5,11 +5,24 @@ from nova_guarda.config import TERMS_ACCEPTANCE_TEXT, TERMS_REJECTION_TEXT
 
 def classify_agenda_reply(text: str) -> str | None:
     normalized = text.strip().lower()
+    if normalized.startswith("booking_confirm:"):
+        return "confirmed"
+    if normalized.startswith("booking_decline:"):
+        return "cancelled"
     if normalized in {"1", "confirmar", "confirmado", "confirmada", "booking_confirm", "confirmed"}:
         return "confirmed"
     if normalized in {"2", "cancelar", "cancelado", "cancelada", "recusar", "recusado", "recusada", "booking_decline", "declined"}:
         return "cancelled"
     return None
+
+
+def booking_id_from_reply(text: str) -> str:
+    """Botões de escala carregam o booking (`booking_confirm:{id}`) para a
+    resposta nunca cair em outra escala do mesmo telefone."""
+    prefix, separator, value = text.strip().partition(":")
+    if separator and prefix.lower() in {"booking_confirm", "booking_decline"}:
+        return value.strip()
+    return ""
 
 
 def classify_checkin_reply(text: str) -> str | None:

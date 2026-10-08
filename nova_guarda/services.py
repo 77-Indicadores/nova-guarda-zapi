@@ -1,15 +1,24 @@
 import logging
 import os
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from nova_guarda.clients import WhatsAppOfficialClient, ZapiClient
-from nova_guarda.config import DEV_FAKE_ZAPI, TERMS_PDF_PATH
+from nova_guarda.config import (
+    DEV_FAKE_ZAPI,
+    TERMS_PDF_PATH,
+    WHATSAPP_TEMPLATE_BOOKING,
+    WHATSAPP_TEMPLATE_CHECKIN,
+    WHATSAPP_TEMPLATE_CHECKOUT,
+    WHATSAPP_TEMPLATE_LANGUAGE,
+    WHATSAPP_TEMPLATE_TERMS,
+)
 from nova_guarda.flows import agenda_status_label, checkin_status_label, next_agenda_status
 from nova_guarda.messages import build_terms_buttons_message
 from nova_guarda.state import AGENDA_STATE, RECEIVED_EVENTS
-from nova_guarda.timezone import br_timestamp
+from nova_guarda.timezone import BR_TZ, br_now, br_timestamp
 
 
 logger = logging.getLogger(__name__)
@@ -38,6 +47,75 @@ def whatsapp_client() -> ZapiClient | WhatsAppOfficialClient:
     if provider == "zapi":
         return ZapiClient()
     raise RuntimeError(f"WHATSAPP_PROVIDER inválido: {provider}")
+
+
+OFFICIAL_PROVIDERS = {"official", "whatsapp_official", "meta", "cloud"}
+WHATSAPP_WINDOW_HOURS = 24
+
+
+def meta_templates_enabled() -> bool:
+    """Templates só valem no provider oficial e quando ligados em Configurações
+    (depois de aprovados na conta da Meta que envia as mensagens)."""
+    if DEV_FAKE_ZAPI or whatsapp_provider() not in OFFICIAL_PROVIDERS:
+        return False
+    from nova_guarda.storage import get_setting
+
+    return get_setting("meta_templates_enabled") == "1"
+
+
+def whatsapp_window_open(phone: str) -> bool:
+    """A Meta só aceita mensagem comum até 24h depois da última mensagem do cooperado."""
+    from nova_guarda.storage import last_inbound_message_at
+
+    try:
+        last_inbound = datetime.strptime(last_inbound_message_at(phone), "%d/%m/%Y %H:%M:%S").replace(tzinfo=BR_TZ)
+    except ValueError:
+        return False
+    return br_now() - last_inbound < timedelta(hours=WHATSAPP_WINDOW_HOURS)
+
+
+def template_text(value: Any, fallback: str = "Não informado") -> str:
+    # Variável de template não pode ser vazia nem ter quebra de linha.
+    return " ".join(str(value or "").split())[:300] or fallback
+
+
+def template_schedule(agenda_data: dict[str, str]) -> tuple[str, str]:
+    """Data e horário legíveis; a 77Gestão costuma mandar só o início em ISO."""
+    date_text = str(agenda_data.get("schedule_date") or "").strip()
+    time_text = str(agenda_data.get("schedule_time") or "").strip()
+    try:
+        parsed = datetime.fromisoformat(date_text.replace("Z", "+00:00"))
+    except ValueError:
+        return template_text(date_text), template_text(time_text)
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(BR_TZ)
+    return parsed.strftime("%d/%m/%Y"), time_text or parsed.strftime("%H:%M")
+
+
+def send_meta_template(phone: str, name: str, body_parameters: list[str], button_payloads: list[str]) -> dict[str, Any]:
+    payload = WhatsAppOfficialClient().send_template(
+        phone, name, WHATSAPP_TEMPLATE_LANGUAGE, body_parameters, button_payloads
+    )
+    logger.info("Resposta envio template %s WhatsApp: %s", name, payload)
+    return payload
+
+
+def schedule_template_parameters(agenda_data: dict[str, str], with_address: bool = True) -> list[str]:
+    date_text, time_text = template_schedule(agenda_data)
+    parameters = [template_text(agenda_data.get("client_name"), "cooperado(a)")]
+    if with_address:
+        parameters.append(template_text(agenda_data.get("client_address"), "Endereço não informado"))
+    return parameters + [date_text, time_text, template_text(agenda_data.get("service"), "Atendimento Nova Guarda")]
+
+
+def terms_template_required(phone: str) -> bool:
+    return meta_templates_enabled() and not whatsapp_window_open(phone)
+
+
+def send_terms_template(phone: str, name: str) -> dict[str, Any]:
+    return send_meta_template(
+        phone, WHATSAPP_TEMPLATE_TERMS, [template_text(name, "cooperado(a)")], ["terms_accept", "terms_reject"]
+    )
 
 
 def update_agenda_state(phone: str, decision: str, text: str) -> dict[str, Any]:
@@ -98,13 +176,27 @@ def send_zapi_document(phone: str, document_path: Path, caption: str) -> dict[st
     return payload
 
 
-def send_zapi_agenda_buttons(phone: str, message: str) -> dict[str, Any]:
+def send_zapi_agenda_buttons(
+    phone: str,
+    message: str,
+    booking_id: str = "",
+    agenda_data: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    suffix = f":{booking_id}" if booking_id else ""
     buttons = [
-        {"id": "booking_confirm", "label": "Confirmar"},
-        {"id": "booking_decline", "label": "Recusar"},
+        {"id": f"booking_confirm{suffix}", "label": "Confirmar"},
+        {"id": f"booking_decline{suffix}", "label": "Recusar"},
     ]
     if DEV_FAKE_ZAPI:
         return fake_zapi_response("send-button-list", phone, {"message": message, "buttons": buttons})
+
+    if agenda_data is not None and meta_templates_enabled():
+        return send_meta_template(
+            phone,
+            WHATSAPP_TEMPLATE_BOOKING,
+            schedule_template_parameters(agenda_data),
+            [button["id"] for button in buttons],
+        )
 
     payload = whatsapp_client().send_button_list(
         phone,
@@ -133,7 +225,13 @@ def send_zapi_terms_buttons(phone: str) -> dict[str, Any]:
     return payload
 
 
-def send_zapi_checkin_options(phone: str, message: str, use_location_link: bool = False, appointment_id: str = "") -> dict[str, Any]:
+def send_zapi_checkin_options(
+    phone: str,
+    message: str,
+    use_location_link: bool = False,
+    appointment_id: str = "",
+    agenda_data: dict[str, str] | None = None,
+) -> dict[str, Any]:
     arrived_id = "checkin2_arrived" if use_location_link else "checkin_arrived"
     if appointment_id:
         arrived_id = f"{arrived_id}:{appointment_id}"
@@ -157,6 +255,14 @@ def send_zapi_checkin_options(phone: str, message: str, use_location_link: bool 
     if DEV_FAKE_ZAPI:
         return fake_zapi_response("send-option-list", phone, {"message": message, "options": options})
 
+    if agenda_data is not None and meta_templates_enabled():
+        return send_meta_template(
+            phone,
+            WHATSAPP_TEMPLATE_CHECKIN,
+            schedule_template_parameters(agenda_data),
+            [option["id"] for option in options],
+        )
+
     payload = whatsapp_client().send_option_list(
         phone,
         message,
@@ -168,10 +274,38 @@ def send_zapi_checkin_options(phone: str, message: str, use_location_link: bool 
     return payload
 
 
-def send_zapi_checkout_button(phone: str, message: str, appointment_id: str) -> dict[str, Any]:
+def send_zapi_location_request(phone: str, message: str) -> dict[str, Any]:
+    if DEV_FAKE_ZAPI:
+        return fake_zapi_response("send-text", phone, {"message": message})
+
+    client = whatsapp_client()
+    # A Cloud API tem um botão nativo "Enviar localização"; na Z-API o
+    # cooperado envia pelo clipe do WhatsApp.
+    if isinstance(client, WhatsAppOfficialClient):
+        payload = client.send_location_request(phone, message)
+    else:
+        payload = client.send_text(phone, message)
+    logger.info("Resposta pedido de localização WhatsApp (%s): %s", whatsapp_provider(), payload)
+    return payload
+
+
+def send_zapi_checkout_button(
+    phone: str,
+    message: str,
+    appointment_id: str,
+    agenda_data: dict[str, str] | None = None,
+) -> dict[str, Any]:
     buttons = [{"id": f"checkout_confirm:{appointment_id}", "label": "Finalizar"}]
     if DEV_FAKE_ZAPI:
         return fake_zapi_response("send-button-list", phone, {"message": message, "buttons": buttons})
+
+    if agenda_data is not None and meta_templates_enabled():
+        return send_meta_template(
+            phone,
+            WHATSAPP_TEMPLATE_CHECKOUT,
+            schedule_template_parameters(agenda_data, with_address=False),
+            [buttons[0]["id"]],
+        )
 
     payload = whatsapp_client().send_button_list(phone, message, buttons)
     logger.info("Resposta envio check-out WhatsApp (%s): %s", whatsapp_provider(), payload)

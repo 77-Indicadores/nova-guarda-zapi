@@ -78,6 +78,53 @@ class WhatsAppOfficialClient:
             }
         )
 
+    def send_template(
+        self,
+        phone: str,
+        name: str,
+        language: str,
+        body_parameters: list[str],
+        button_payloads: list[str],
+    ) -> dict[str, Any]:
+        """Template aprovado com variáveis no corpo e botões de resposta
+        rápida; o payload de cada botão volta no webhook quando ele é tocado."""
+        components: list[dict[str, Any]] = []
+        if body_parameters:
+            components.append(
+                {"type": "body", "parameters": [{"type": "text", "text": text} for text in body_parameters]}
+            )
+        for index, payload in enumerate(button_payloads):
+            components.append(
+                {
+                    "type": "button",
+                    "sub_type": "quick_reply",
+                    "index": str(index),
+                    "parameters": [{"type": "payload", "payload": payload}],
+                }
+            )
+        return self._post(
+            {
+                "messaging_product": "whatsapp",
+                "to": phone,
+                "type": "template",
+                "template": {"name": name, "language": {"code": language}, "components": components},
+            }
+        )
+
+    def send_location_request(self, phone: str, message: str) -> dict[str, Any]:
+        return self._post(
+            {
+                "messaging_product": "whatsapp",
+                "to": phone,
+                "type": "interactive",
+                "interactive": {
+                    "type": "location_request_message",
+                    "body": {"text": message},
+                    "action": {"name": "send_location"},
+                },
+            }
+        )
+
     def send_option_list(
         self,
         phone: str,

@@ -1,11 +1,26 @@
+import json
 from typing import Any
+
+import requests
 
 from nova_guarda.clients import Gestao77Client
 from nova_guarda.gestao77_service import fake_gestao77_enabled
 from nova_guarda.messages import build_terms_buttons_message, build_terms_message, normalize_phone
-from nova_guarda.services import append_fake_sent_message, send_terms_document, send_zapi_terms_buttons, send_zapi_text
+from nova_guarda.services import (
+    append_fake_sent_message,
+    meta_templates_enabled,
+    send_terms_document,
+    send_terms_template,
+    send_zapi_terms_buttons,
+    send_zapi_text,
+    terms_template_required,
+)
+from nova_guarda.timezone import br_now
 from nova_guarda.storage import (
     get_cooperator,
+    get_setting,
+    list_cooperators,
+    set_settings,
     save_sync_event,
     upsert_cooperator,
 )
@@ -23,6 +38,64 @@ ACTIVATION_COMMANDS = {
 }
 
 ONBOARDING_STATUSES = {"not_started", "terms_sent", "accepted", "rejected"}
+
+
+TEST_MODE_BLOCK_MESSAGE = "Modo teste ativo: este telefone não está na lista de cooperados de teste."
+
+
+def test_mode_enabled() -> bool:
+    return get_setting("operation_mode").strip().lower() == "test"
+
+
+def test_cooperators() -> list[dict[str, str]]:
+    """Cooperados marcados em Configurações para receber mensagens em modo teste."""
+    try:
+        items = json.loads(get_setting("test_cooperators") or "[]")
+    except ValueError:
+        return []
+    return [item for item in items if isinstance(item, dict) and item.get("phone")] if isinstance(items, list) else []
+
+
+def add_test_cooperator(phone: str, name: str = "", partner_id: str = "") -> None:
+    phone = normalize_phone(phone)
+    items = test_cooperators()
+    if not phone or phone in {item["phone"] for item in items}:
+        return
+    items.append({"phone": phone, "partner_id": partner_id, "name": name})
+    set_settings({"test_cooperators": json.dumps(items, ensure_ascii=False)})
+
+
+def mode_allows_phone(phone: str) -> bool:
+    """Trava do modo teste: com ele ligado, a automação só fala com os
+    cooperados de teste. Em produção não restringe nada."""
+    if not test_mode_enabled():
+        return True
+    return normalize_phone(phone) in {normalize_phone(item["phone"]) for item in test_cooperators()}
+
+
+def list_test_candidates() -> list[dict[str, str]]:
+    """Cooperados que podem ser marcados como teste: os ativos da 77Gestão
+    (ou, com a 77Gestão em modo fake, os que já existem localmente)."""
+    if fake_gestao77_enabled():
+        return [
+            {"phone": row["phone"], "partner_id": row.get("partner_id") or "", "name": row.get("partner_name") or ""}
+            for row in list_cooperators()
+        ]
+
+    payload = Gestao77Client.from_env().list_partners("cooperado")
+    partners = payload.get("partners", [])
+    candidates: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for partner in partners if isinstance(partners, list) else []:
+        if not isinstance(partner, dict) or not partner_is_active_cooperator(partner):
+            continue
+        numbers = partner_phone_numbers(partner)
+        phone = normalize_phone(numbers[0]) if numbers else ""
+        if not phone or phone in seen:
+            continue
+        seen.add(phone)
+        candidates.append({"phone": phone, "partner_id": str(partner.get("id") or ""), "name": str(partner.get("name") or "")})
+    return sorted(candidates, key=lambda item: item["name"].lower())
 
 
 def is_activation_command(text: str) -> bool:
@@ -73,6 +146,90 @@ def handle_activation_request(phone: str, text: str) -> dict[str, Any]:
     return {"status": "terms_sent", "reply": "Termo de uso e consentimento enviado para aceite.", "cooperator": cooperator}
 
 
+def send_terms_to_phone(phone: str, partner: dict[str, Any] | None = None, source: str = "manual") -> dict[str, Any]:
+    """Envia o termo por iniciativa da Nova Guarda (disparo diário ou manual),
+    sem o cooperado precisar mandar “ativar”. Nunca reenvia para quem já
+    aceitou ou recusou."""
+    phone = normalize_phone(phone)
+    item: dict[str, Any] = {"phone": phone, "ok": False, "action": "skipped"}
+    if not phone:
+        item["error"] = "Telefone não informado."
+        return item
+
+    if not mode_allows_phone(phone):
+        item["error"] = TEST_MODE_BLOCK_MESSAGE
+        return item
+
+    existing = get_cooperator(phone)
+    status = existing.get("onboarding_status") if existing else "not_started"
+    if status == "accepted":
+        item["reason"] = "Cooperado já aceitou o termo."
+        return item
+    if status == "rejected":
+        item["reason"] = "Cooperado recusou o termo e está bloqueado."
+        return item
+
+    partner = partner or (existing.get("partner_payload") if existing else None) or find_allowed_partner_by_phone(phone)
+    if not partner:
+        item["error"] = "Telefone não encontrado no cadastro de cooperados da 77Gestão."
+        return item
+    if str(partner.get("active", "1")) in {"0", "false", "False"}:
+        item["error"] = "Cooperado inativo na 77Gestão."
+        return item
+
+    send_terms_flow(phone, partner, resend=status == "terms_sent")
+    cooperator = upsert_cooperator(phone, "terms_sent", partner, f"termo:{source}")
+    save_sync_event("cooperator", phone, f"terms:sent:{source}", True, {"phone": phone}, {"partner_id": partner.get("id")})
+    item.update({"ok": True, "action": "terms_sent", "partner_name": cooperator.get("partner_name", "")})
+    return item
+
+
+def dispatch_pending_terms(
+    bookings: list[dict[str, Any]],
+    source: str = "auto",
+    skip_sent_today: bool = False,
+) -> list[dict[str, Any]]:
+    """Envia o termo para cada cooperado com escala pendente que ainda não aceitou.
+    Com skip_sent_today, quem já recebeu o termo hoje não recebe de novo (usado
+    quando o disparo diário é repetido só para quem falhou)."""
+    today = br_now().date().isoformat()
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for booking in bookings:
+        phone = normalize_phone(str(booking.get("phone") or ""))
+        if not phone or phone in seen or not mode_allows_phone(phone):
+            continue
+        seen.add(phone)
+        existing = get_cooperator(phone)
+        if existing and existing.get("onboarding_status") in {"accepted", "rejected"}:
+            continue
+        if (
+            skip_sent_today
+            and existing
+            and existing.get("onboarding_status") == "terms_sent"
+            and str(existing.get("updated_at") or "")[:10] == today
+        ):
+            continue
+        try:
+            item = send_terms_to_phone(phone, partner_from_booking(booking), source)
+        except (RuntimeError, requests.RequestException, ValueError) as exc:
+            item = {"phone": phone, "ok": False, "action": "skipped", "error": str(exc), "retryable": True}
+        item["booking_id"] = str(booking.get("booking_id") or "")
+        results.append(item)
+    return results
+
+
+def partner_from_booking(booking: dict[str, Any]) -> dict[str, Any]:
+    payload = booking.get("payload") if isinstance(booking.get("payload"), dict) else {}
+    partner = payload.get("partner")
+    if isinstance(partner, dict) and partner:
+        return partner
+    return {
+        "id": booking.get("partner_id") or "",
+        "name": booking.get("partner_name") or booking.get("name") or "",
+    }
+
+
 def accept_terms(phone: str, text: str) -> dict[str, Any]:
     phone = normalize_phone(phone)
     existing = get_cooperator(phone)
@@ -89,6 +246,12 @@ def accept_terms(phone: str, text: str) -> dict[str, Any]:
     cooperator = upsert_cooperator(phone, "accepted", existing.get("partner_payload", {}), text)
     reply = "Aceite registrado com sucesso. Seu cadastro está ativo para receber comunicações operacionais da Nova Guarda."
     response = send_zapi_text(phone, reply)
+    if meta_templates_enabled():
+        # O aceite pode ter vindo pelo template, que não carrega o PDF.
+        try:
+            send_terms_document(phone, build_terms_message({"client_name": cooperator.get("partner_name") or "Cooperado"}))
+        except (RuntimeError, requests.RequestException, ValueError):
+            pass
     save_sync_event("cooperator", phone, "terms:accepted", True, {"phone": phone}, {"partner_id": cooperator.get("partner_id")})
     return {"status": "accepted", "reply": reply, "response": response, "cooperator": cooperator}
 
@@ -105,6 +268,8 @@ def reject_terms(phone: str, text: str) -> dict[str, Any]:
 
 
 def ensure_operational_access(phone: str) -> tuple[bool, str]:
+    if not mode_allows_phone(phone):
+        return False, TEST_MODE_BLOCK_MESSAGE
     cooperator = get_cooperator(normalize_phone(phone))
     if not cooperator:
         return False, "Envie “ativar” primeiro para validar seu cadastro e aceitar o termo de uso e consentimento."
@@ -183,6 +348,12 @@ def fake_partner_for_phone(phone: str) -> dict[str, Any] | None:
 
 def send_terms_flow(phone: str, partner: dict[str, Any], resend: bool = False) -> None:
     name = str(partner.get("name") or "Cooperado").strip()
+    if terms_template_required(phone):
+        # Fora da janela de 24h a Meta só aceita template: ele abre a conversa
+        # já com os botões de aceite. O PDF segue quando o cooperado responder.
+        send_terms_template(phone, name)
+        return
+
     intro = (
         "Seu termo de uso e consentimento ainda está pendente. Reenviei as opções de aceite."
         if resend

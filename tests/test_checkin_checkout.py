@@ -106,6 +106,18 @@ class CheckinCheckoutFlowTest(unittest.TestCase):
             },
         )
 
+    def send_location(self, address="Rua Teste, 100 - Santos"):
+        return self.client.post(
+            "/webhook",
+            json={
+                "type": "ReceivedCallback",
+                "fromMe": False,
+                "isGroup": False,
+                "phone": self.phone,
+                "location": {"latitude": -23.96, "longitude": -46.33, "address": address},
+            },
+        )
+
     def sync_count(self, appointment_id, status):
         with self.storage.connect() as conn:
             row = conn.execute(
@@ -167,13 +179,19 @@ class CheckinCheckoutFlowTest(unittest.TestCase):
         self.create_booking()
         self.post_checkin_send()
 
-        response = self.send_reply(f"checkin_arrived:{self.appointment_id}")
+        self.send_reply(f"checkin_arrived:{self.appointment_id}")
+        pending = self.storage.get_appointment(self.appointment_id)
+        self.assertEqual(pending["local_status"], "location_pending")
+        self.assertEqual(self.sync_count(self.appointment_id, "checked_in"), 0)
+
+        response = self.send_location()
 
         self.assertEqual(response.status_code, 200)
         appointment = self.storage.get_appointment(self.appointment_id)
         self.assertEqual(appointment["local_status"], "checked_in")
         self.assertEqual(appointment["gestao77_status"], "checked_in")
         self.assertTrue(appointment["checked_in_at"])
+        self.assertEqual(appointment["checkin_address"], "Rua Teste, 100 - Santos")
         self.assertEqual(self.sync_count(self.appointment_id, "checked_in"), 1)
 
     def test_duplicate_checkin_does_not_duplicate_post(self):
@@ -183,8 +201,44 @@ class CheckinCheckoutFlowTest(unittest.TestCase):
 
         self.send_reply(f"checkin_arrived:{self.appointment_id}")
         self.send_reply(f"checkin_arrived:{self.appointment_id}")
+        self.send_location()
+        self.send_location()
 
         self.assertEqual(self.sync_count(self.appointment_id, "checked_in"), 1)
+
+    def test_location_without_pending_checkin_does_not_check_in(self):
+        self.accept_cooperator()
+        self.create_booking()
+        self.post_checkin_send()
+
+        self.send_location()
+
+        appointment = self.storage.get_appointment(self.appointment_id)
+        self.assertEqual(appointment["local_status"], "checkin_pending")
+        self.assertEqual(self.sync_count(self.appointment_id, "checked_in"), 0)
+
+    def test_arrival_after_reported_delay_still_requires_location(self):
+        self.accept_cooperator()
+        self.create_booking()
+        self.post_checkin_send()
+        self.send_reply(f"late_15:{self.appointment_id}")
+
+        self.send_reply(f"checkin_arrived:{self.appointment_id}")
+        self.assertEqual(self.storage.get_appointment(self.appointment_id)["local_status"], "location_pending")
+        self.send_location()
+
+        self.assertEqual(self.storage.get_appointment(self.appointment_id)["local_status"], "checked_in")
+
+    def test_checkin_is_not_resent_while_waiting_location_or_after_no_show(self):
+        self.accept_cooperator()
+        self.create_booking()
+        self.post_checkin_send()
+        self.send_reply(f"checkin_arrived:{self.appointment_id}")
+
+        response = self.post_checkin_send()
+
+        self.assertTrue(response.get_json()["result"]["idempotent"])
+        self.assertEqual(self.storage.get_appointment(self.appointment_id)["local_status"], "location_pending")
 
     def test_checkout_without_checkin_is_blocked(self):
         self.accept_cooperator()
@@ -202,6 +256,7 @@ class CheckinCheckoutFlowTest(unittest.TestCase):
         self.create_booking()
         self.post_checkin_send()
         self.send_reply(f"checkin_arrived:{self.appointment_id}")
+        self.send_location()
         self.post_checkout_send()
 
         response = self.send_reply(f"checkout_confirm:{self.appointment_id}")
@@ -222,6 +277,7 @@ class CheckinCheckoutFlowTest(unittest.TestCase):
         self.post_checkin_send(self.appointment_id, "booking-2")
 
         self.send_reply(f"checkin_arrived:{old_id}")
+        self.send_location()
 
         current = self.storage.get_appointment(self.appointment_id)
         old = self.storage.get_appointment(old_id)
@@ -239,7 +295,8 @@ class CheckinCheckoutFlowTest(unittest.TestCase):
             "nova_guarda.gestao77_service.Gestao77Client.from_env",
             return_value=client,
         ):
-            response = self.send_reply(f"checkin_arrived:{self.appointment_id}")
+            self.send_reply(f"checkin_arrived:{self.appointment_id}")
+            response = self.send_location()
 
         self.assertEqual(response.status_code, 200)
         appointment = self.storage.get_appointment(self.appointment_id)

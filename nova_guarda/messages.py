@@ -96,7 +96,11 @@ def build_confirmation_reply(status: str, agenda: dict[str, Any] | None = None) 
 
 def build_checkin_reply(status: str) -> str:
     if status == "arrived":
-        return "Check-in recebido. Envie sua localização atual pelo WhatsApp para concluir o registro."
+        return (
+            "Para concluir o check-in, envie sua localização atual por aqui "
+            "(clipe 📎 > Localização > Enviar localização atual). "
+            "O check-in só é registrado depois que a localização chegar."
+        )
     if status == "location_received":
         return "Localização recebida com sucesso pela Nova Guarda."
     if status == "late":

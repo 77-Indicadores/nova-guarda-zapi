@@ -14,12 +14,15 @@
     {% for key in ['terms_sent', 'accepted', 'rejected', 'not_started'] %}
     <a class="btn {% if status_filter == key %}primary{% endif %}" href="{{ url_for('cooperados', status=key) }}">{{ key|status_label }}</a>
     {% endfor %}
+    <form method="post" action="{{ url_for('cooperados_enviar_termos_pendentes') }}" style="margin-left:auto">
+      <button class="primary" type="submit" title="Consulta as escalas pendentes na 77Gestão e envia o termo para quem ainda não aceitou">Enviar termo para pendentes</button>
+    </form>
   </div>
 </div>
 
 <div class="table-wrap">
   <table>
-    <thead><tr><th>Telefone</th><th>Parceiro</th><th>Status</th><th>Termo enviado</th><th>Aceito em</th><th>Atualizado</th></tr></thead>
+    <thead><tr><th>Telefone</th><th>Parceiro</th><th>Status</th><th>Termo enviado</th><th>Aceito em</th><th>Atualizado</th><th></th></tr></thead>
     <tbody>
     {% for row in rows %}
     <tr>
@@ -37,9 +40,17 @@
       <td>{{ row.terms_sent_at|brt }}</td>
       <td>{{ row.accepted_at|brt }}</td>
       <td>{{ row.updated_at|brt }}</td>
+      <td>
+        {% if row.onboarding_status in ['not_started', 'terms_sent'] %}
+        <form method="post" action="{{ url_for('cooperados_enviar_termo') }}">
+          <input type="hidden" name="phone" value="{{ row.phone }}">
+          <button class="btn" type="submit">{% if row.onboarding_status == 'terms_sent' %}Reenviar termo{% else %}Enviar termo{% endif %}</button>
+        </form>
+        {% endif %}
+      </td>
     </tr>
     {% else %}
-    <tr><td colspan="6" class="muted" style="text-align:center;padding:24px">Nenhum cooperado registrado ainda.</td></tr>
+    <tr><td colspan="7" class="muted" style="text-align:center;padding:24px">Nenhum cooperado registrado ainda.</td></tr>
     {% endfor %}
     </tbody>
   </table>

@@ -56,7 +56,69 @@ class AutomationTest(unittest.TestCase):
             },
         )
 
+    def run_at_hour(self, hour: int, bookings: list[dict]) -> dict:
+        from nova_guarda.automation import run_automation_once
+        from nova_guarda.timezone import br_now
+
+        now = br_now().replace(hour=hour, minute=5)
+        with patch("nova_guarda.automation.br_now", return_value=now), patch(
+            "nova_guarda.automation.list_pending_partner_bookings", return_value=bookings
+        ), patch("nova_guarda.automation.send_booking_to_partner", return_value={"status": "sent"}), patch(
+            "nova_guarda.automation.retry_pending_gestao77_syncs",
+            return_value={"ok": True, "results": []},
+        ):
+            return run_automation_once(month=8, year=2026, limit=25)
+
+    def test_daily_terms_dispatch_sends_once_to_pending_cooperators_without_ativar(self):
+        self.accept_cooperator()
+        rejected_phone = "5513988887777"
+        self.storage.upsert_cooperator(rejected_phone, "rejected", {"id": 1, "name": "Recusou"})
+        new_phone = "5513977776666"
+        bookings = [
+            {"booking_id": "b-accepted", "phone": self.phone, "name": "Cooperado Teste"},
+            {"booking_id": "b-rejected", "phone": rejected_phone, "name": "Recusou"},
+            {"booking_id": "b-new", "phone": new_phone, "partner_id": "77", "partner_name": "Novo Cooperado"},
+            {"booking_id": "b-new-2", "phone": new_phone, "partner_id": "77", "partner_name": "Novo Cooperado"},
+        ]
+
+        before = self.run_at_hour(6, bookings)
+        self.assertEqual(before["terms"], [])
+        self.assertIsNone(self.storage.get_cooperator(new_phone))
+
+        result = self.run_at_hour(7, bookings)
+        self.assertEqual([item["phone"] for item in result["terms"]], [new_phone])
+        self.assertTrue(result["terms"][0]["ok"])
+        cooperator = self.storage.get_cooperator(new_phone)
+        self.assertEqual(cooperator["onboarding_status"], "terms_sent")
+        self.assertEqual(cooperator["partner_name"], "Novo Cooperado")
+        self.assertEqual(self.storage.get_cooperator(rejected_phone)["onboarding_status"], "rejected")
+
+        again = self.run_at_hour(9, bookings)
+        self.assertEqual(again["terms"], [])
+
+    def test_daily_terms_dispatch_respects_disabled_setting(self):
+        self.storage.set_settings({"terms_auto_enabled": "0"})
+        result = self.run_at_hour(8, [{"booking_id": "b-new", "phone": "5513977776666", "name": "Novo"}])
+
+        self.assertEqual(result["terms"], [])
+        self.assertIsNone(self.storage.get_cooperator("5513977776666"))
+
+    def test_manual_terms_send_from_cooperators_page(self):
+        self.login()
+        phone = "5513977776666"
+        response = self.client.post("/cooperados/enviar-termo", data={"phone": phone})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(self.storage.get_cooperator(phone)["onboarding_status"], "terms_sent")
+
+        self.client.post("/dev/simulate-whatsapp", json={"phone": phone, "message": "terms_accept"})
+        self.assertEqual(self.storage.get_cooperator(phone)["onboarding_status"], "accepted")
+
+        self.client.post("/cooperados/enviar-termo", data={"phone": phone})
+        self.assertEqual(self.storage.get_cooperator(phone)["onboarding_status"], "accepted")
+
     def test_automation_sends_only_to_accepted_cooperator_and_records_run(self):
+        self.storage.set_settings({"terms_auto_enabled": "0"})
         self.accept_cooperator()
         bookings = [
             {"booking_id": "booking-1", "phone": self.phone, "name": "Cooperado Teste"},

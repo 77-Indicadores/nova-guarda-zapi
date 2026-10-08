@@ -75,6 +75,18 @@ class LocalEventsAndRetryTest(unittest.TestCase):
             },
         )
 
+    def send_location(self, address="Rua Teste, 100 - Santos"):
+        return self.client.post(
+            "/webhook",
+            json={
+                "type": "ReceivedCallback",
+                "fromMe": False,
+                "isGroup": False,
+                "phone": self.phone,
+                "location": {"latitude": -23.96, "longitude": -46.33, "address": address},
+            },
+        )
+
     def appointment_sync_count(self):
         with self.storage.connect() as conn:
             row = conn.execute("SELECT COUNT(*) AS total FROM sync_events WHERE entity_type = 'appointment'").fetchone()
@@ -153,6 +165,7 @@ class LocalEventsAndRetryTest(unittest.TestCase):
     def test_retry_pending_syncs_and_repeated_retry_do_not_duplicate_completed(self):
         self.setup_checkin_pending()
         self.send_reply(f"checkin_arrived:{self.appointment_id}")
+        self.send_location()
         appointment = self.storage.get_appointment(self.appointment_id)
         self.assertEqual(appointment["gestao77_status"], "checked_in")
 

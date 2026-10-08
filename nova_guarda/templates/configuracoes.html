@@ -28,6 +28,10 @@
           <option value="official" {% if cfg.active_provider == 'official' %}selected{% endif %}>Meta Cloud oficial</option>
         </select>
       </label>
+      <label style="display:flex;align-items:center;gap:10px;margin-top:12px">
+        <input type="checkbox" name="meta_templates_enabled" value="1" {% if cfg.meta_templates_enabled == '1' %}checked{% endif %}>
+        Usar templates aprovados da Meta (termo, escala, check-in e check-out) para iniciar conversa fora da janela de 24h
+      </label>
     </div>
     <div class="card">
       <p class="card-title">77Gestão</p>
@@ -51,6 +55,10 @@
         <input type="checkbox" name="auto_checkin_enabled" value="1" {% if cfg.auto_checkin_enabled == '1' %}checked{% endif %}>
         Disparar check-in/check-out automático
       </label>
+      <label style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <input type="checkbox" name="terms_auto_enabled" value="1" {% if cfg.terms_auto_enabled == '1' %}checked{% endif %}>
+        Enviar termo de aceite automaticamente, uma vez por dia, para quem tem escala pendente e ainda não aceitou
+      </label>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px">
         <label style="display:flex;flex-direction:column;gap:6px">
           Intervalo em minutos
@@ -67,6 +75,22 @@
         <label style="display:flex;flex-direction:column;gap:6px">
           Check-out depois
           <input type="number" min="0" max="10080" name="checkout_after_minutes" value="{{ cfg.checkout_after_minutes }}">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:6px">
+          Hora do termo (0–23)
+          <input type="number" min="0" max="23" name="terms_send_hour" value="{{ cfg.terms_send_hour }}">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:6px">
+          Lembrete de escala (horas)
+          <input type="number" min="1" max="720" name="booking_reminder_hours" value="{{ cfg.booking_reminder_hours }}">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:6px">
+          Lembrete de presença (min)
+          <input type="number" min="1" max="1440" name="presence_reminder_minutes" value="{{ cfg.presence_reminder_minutes }}">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:6px">
+          WhatsApp da equipe para alertas
+          <input type="text" name="alert_phone" placeholder="5513999999999" value="{{ cfg.alert_phone }}">
         </label>
       </div>
     </div>
@@ -85,6 +109,76 @@
 
   <button class="primary" type="submit">Salvar configurações</button>
 </form>
+
+{% if cfg.operation_mode == 'test' %}
+<div class="card">
+  <p class="card-title">Cooperados de teste <span class="badge badge-warn">{{ test_cooperators|length }} marcado(s)</span></p>
+  <p class="card-sub">
+    Com o modo <strong>Teste assistido</strong> ligado, a automação (termo, escala, check-in, check-out e lembretes)
+    só envia mensagem para os cooperados marcados aqui. Ninguém fora desta lista recebe nada até o modo voltar para Produção.
+  </p>
+
+  {% if test_cooperators %}
+  <div class="table-wrap" style="margin-bottom:16px">
+    <table>
+      <thead><tr><th>Cooperado</th><th>Telefone</th><th>Termo</th><th>Ações</th></tr></thead>
+      <tbody>
+      {% for item in test_cooperators %}
+      {% set status = cooperator_statuses.get(item.phone, 'not_started') %}
+      <tr>
+        <td><strong>{{ item.name or '-' }}</strong><br><span class="muted text-sm">{{ item.partner_id or '-' }}</span></td>
+        <td class="mono">{{ item.phone }}</td>
+        <td><span class="badge {% if status == 'accepted' %}badge-ok{% elif status == 'rejected' %}badge-fail{% else %}badge-pend{% endif %}">{{ status|status_label }}</span></td>
+        <td>
+          <div class="row-gap">
+            <form method="post" action="{{ url_for('teste_assistido_escala') }}">
+              <input type="hidden" name="phone" value="{{ item.phone }}">
+              <button class="primary" type="submit">{% if status == 'accepted' %}Criar e enviar escala agora{% else %}Enviar termo agora{% endif %}</button>
+            </form>
+            <form method="post" action="{{ url_for('teste_assistido_resetar') }}">
+              <input type="hidden" name="phone" value="{{ item.phone }}">
+              <button class="btn" type="submit" title="Apaga os dados locais deste telefone para repetir o teste do zero">Resetar</button>
+            </form>
+          </div>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {% if test_candidates_error %}
+  <p class="muted text-sm">Não consegui listar os cooperados da 77Gestão agora: {{ test_candidates_error }}</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('teste_assistido_cooperados') }}">
+    <label style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px">
+      Marcar cooperados da 77Gestão ({{ test_candidates|length }})
+      <input type="text" id="test-candidate-filter" placeholder="Buscar por nome ou telefone">
+    </label>
+    <div id="test-candidate-list" style="max-height:280px;overflow:auto;border:1px solid #d1d5db;border-radius:6px;padding:8px;margin-bottom:12px">
+      {% for item in test_candidates %}
+      <label data-search="{{ (item.name ~ ' ' ~ item.phone)|lower }}" style="display:flex;align-items:center;gap:8px;font-weight:400;padding:3px 0">
+        <input type="checkbox" name="phones" value="{{ item.phone }}" {% if item.phone in test_selected_phones %}checked{% endif %}>
+        <span>{{ item.name or 'Sem nome' }}</span>
+        <span class="mono muted text-sm">{{ item.phone }}</span>
+      </label>
+      {% else %}
+      <p class="muted text-sm" style="margin:0">Nenhum cooperado disponível para marcar.</p>
+      {% endfor %}
+    </div>
+    <button class="primary" type="submit">Salvar cooperados de teste</button>
+  </form>
+  <script>
+    document.getElementById("test-candidate-filter").addEventListener("input", function (event) {
+      var term = event.target.value.trim().toLowerCase();
+      document.querySelectorAll("#test-candidate-list label").forEach(function (row) {
+        row.style.display = row.dataset.search.indexOf(term) === -1 ? "none" : "flex";
+      });
+    });
+  </script>
+</div>
+{% endif %}
 
 <div class="card">
   <p class="card-title">Teste assistido</p>

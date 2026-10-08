@@ -11,13 +11,14 @@ from nova_guarda.flows import agenda_status_label
 from nova_guarda.flows import checkin_status_label
 from nova_guarda.messages import build_agenda_message, build_checkin2_message, build_checkin_message, normalize_phone
 from nova_guarda.services import append_fake_sent_message, send_zapi_agenda_buttons, send_zapi_checkin_options
-from nova_guarda.services import send_zapi_checkout_button
+from nova_guarda.services import send_zapi_checkout_button, send_zapi_location_request
 from nova_guarda.services import whatsapp_provider
 from nova_guarda.state import AGENDA_STATE
 from nova_guarda.storage import (
     cooperator_has_accepted_terms,
     delete_local_data_for_phone,
     get_appointment,
+    get_appointment_awaiting_location,
     get_booking,
     get_cooperator,
     get_latest_appointment_by_phone,
@@ -27,7 +28,9 @@ from nova_guarda.storage import (
     mark_appointment_checkin_sent,
     mark_appointment_checkout_sent,
     mark_appointment_late,
+    mark_appointment_location_pending,
     mark_appointment_no_show,
+    save_appointment_checkin_location,
     mark_appointment_synced,
     mark_booking_synced,
     mark_booking_whatsapp_sent,
@@ -35,6 +38,7 @@ from nova_guarda.storage import (
     transition_booking_response,
     transition_appointment_checkin,
     transition_appointment_checkout,
+    update_booking_appointments,
     update_booking_local_status,
     upsert_appointment,
     upsert_booking,
@@ -189,7 +193,7 @@ def send_booking_to_partner(booking_id: int | str, phone: str = "") -> dict[str,
 
     agenda_data = agenda_data_from_booking(booking)
     message = build_agenda_message(agenda_data)
-    response_payload = send_zapi_agenda_buttons(phone, message)
+    response_payload = send_zapi_agenda_buttons(phone, message, str(booking_id), agenda_data)
     append_fake_sent_message(phone, "agenda", message, response_payload)
     sent_booking = mark_booking_whatsapp_sent(booking_id, phone, whatsapp_provider(), response_payload)
 
@@ -230,7 +234,9 @@ def send_checkin_to_partner(
         raise PermissionError("Cooperado ainda não aceitou os termos.")
 
     appointment = ensure_appointment_for_checkin(appointment_id, phone, booking_id)
-    if appointment.get("local_status") in {"checkin_pending", "checked_in", "checkout_pending", "checked_out"}:
+    # Qualquer status além de "sent" significa que o check-in já foi enviado
+    # (aguardando localização, atraso, não vou...): não reenvia a cada ciclo.
+    if appointment.get("local_status") != "sent":
         return {
             "appointment_id": str(appointment_id),
             "booking_id": appointment.get("booking_id"),
@@ -246,6 +252,7 @@ def send_checkin_to_partner(
         message,
         use_location_link=use_location_link,
         appointment_id=str(appointment_id),
+        agenda_data=agenda_data,
     )
     append_fake_sent_message(phone, mode, message, response_payload)
     stored_appointment = mark_appointment_checkin_sent(appointment_id, whatsapp_provider(), response_payload)
@@ -273,10 +280,14 @@ def send_checkin_to_partner(
     }
 
 
-def sync_booking_reply_for_phone(phone: str, decision: str) -> dict[str, Any] | None:
+def sync_booking_reply_for_phone(phone: str, decision: str, booking_id: str = "") -> dict[str, Any] | None:
     phone = normalize_phone(phone)
+    if booking_id:
+        booking = get_booking(booking_id)
+        if not booking or normalize_phone(booking.get("phone", "")) != phone:
+            raise PermissionError("Resposta de escala não pertence a este telefone.")
     state = AGENDA_STATE.get(phone, {})
-    booking_id = state.get("booking_id") or state.get("agenda", {}).get("booking_id")
+    booking_id = booking_id or state.get("booking_id") or state.get("agenda", {}).get("booking_id")
     if not booking_id:
         booking = get_latest_booking_by_phone(phone)
         booking_id = booking.get("booking_id") if booking else None
@@ -330,6 +341,103 @@ def sync_checkin_for_phone(phone: str, status: str, address: str = "") -> dict[s
     return sync_appointment_checkin(appointment_id, address=address, event_id=status)
 
 
+def request_checkin_location(phone: str, status: str) -> dict[str, Any]:
+    """Registra o “cheguei” e deixa o appointment aguardando a localização do
+    WhatsApp, que é obrigatória para concluir o check-in."""
+    phone = normalize_phone(phone)
+    appointment_id = appointment_id_from_checkin_status(status)
+    if not appointment_id:
+        appointment = get_latest_appointment_by_phone(phone)
+        appointment_id = appointment.get("appointment_id") if appointment else ""
+    appointment = get_appointment(appointment_id) if appointment_id else None
+    if not appointment or normalize_phone(appointment.get("phone", "")) != phone:
+        raise PermissionError("Check-in não pertence a um appointment deste telefone.")
+    changed, stored = mark_appointment_location_pending(appointment_id)
+    return {
+        "appointment_id": str(appointment_id),
+        "booking_id": stored.get("booking_id", ""),
+        "phone": phone,
+        "status": "location_pending",
+        "idempotent": not changed,
+    }
+
+
+def sync_checkin_location_for_phone(phone: str, latitude: Any, longitude: Any, address: str) -> dict[str, Any] | None:
+    """Conclui o check-in do appointment que aguarda localização. Retorna None
+    quando o telefone não tem check-in aguardando localização."""
+    phone = normalize_phone(phone)
+    appointment = get_appointment_awaiting_location(phone)
+    if not appointment:
+        return None
+    appointment_id = appointment["appointment_id"]
+    save_appointment_checkin_location(appointment_id, latitude, longitude, address)
+    return sync_appointment_checkin(appointment_id, address=address, event_id="location")
+
+
+APPOINTMENTS_REFRESH_MINUTES = 60
+
+
+def refresh_booking_appointments(booking: dict[str, Any]) -> dict[str, Any]:
+    """Reconcilia os appointments da escala com a 77Gestão (no máximo uma vez
+    por hora por escala): atendimento novo passa a receber check-in e
+    atendimento removido/cancelado lá deixa de receber. Se a consulta falhar,
+    segue com a lista local."""
+    if fake_gestao77_enabled():
+        return booking
+    payload = booking.get("payload") or {}
+    now = br_now()
+    try:
+        refreshed_at = datetime.fromisoformat(str(payload.get("appointments_refreshed_at") or ""))
+    except ValueError:
+        refreshed_at = None
+    if refreshed_at and now - refreshed_at < timedelta(minutes=APPOINTMENTS_REFRESH_MINUTES):
+        return booking
+    booking_id = booking.get("booking_id")
+    try:
+        result = Gestao77Client.from_env().list_appointments_by_booking(booking_id)
+    except (RuntimeError, requests.RequestException, ValueError):
+        return booking
+    appointments = result.get("appointments") if isinstance(result, dict) else None
+    if not isinstance(appointments, list):
+        return booking
+    update_booking_appointments(booking_id, appointments, now.isoformat(timespec="seconds"))
+    return get_booking(booking_id) or booking
+
+
+def send_followup_reminder(entity_type: str, entity: dict[str, Any]) -> dict[str, Any]:
+    """Lembrete único para um estado que está parado esperando o cooperado."""
+    phone = normalize_phone(entity.get("phone", ""))
+    status = entity.get("local_status")
+    if not phone:
+        raise ValueError("Sem telefone para enviar lembrete.")
+    if entity_type == "booking":
+        agenda_data = agenda_data_from_booking(entity)
+        message = "Lembrete: sua escala ainda aguarda resposta.\n\n" + build_agenda_message(agenda_data)
+        response = send_zapi_agenda_buttons(phone, message, str(entity.get("booking_id")), agenda_data)
+        append_fake_sent_message(phone, "agenda", message, response)
+        return response
+
+    appointment_id = str(entity.get("appointment_id"))
+    agenda_data = agenda_data_for_appointment(entity)
+    if status in {"checkin_pending", "late_reported"}:
+        message = "Lembrete: você já chegou ao local do atendimento? Responda abaixo."
+        response = send_zapi_checkin_options(
+            phone, message, use_location_link=True, appointment_id=appointment_id, agenda_data=agenda_data
+        )
+        append_fake_sent_message(phone, "checkin2", message, response)
+    elif status == "location_pending":
+        message = "Lembrete: envie sua localização atual por aqui para concluir o check-in."
+        response = send_zapi_location_request(phone, message)
+        append_fake_sent_message(phone, "checkin2", message, response)
+    elif status == "checkout_pending":
+        message = "Lembrete: você já finalizou este atendimento?"
+        response = send_zapi_checkout_button(phone, message, appointment_id, agenda_data)
+        append_fake_sent_message(phone, "checkout", message, response)
+    else:
+        raise ValueError(f"Status sem lembrete: {status}")
+    return response
+
+
 def ensure_appointment_for_checkin(appointment_id: int | str, phone: str, booking_id: str | int = "") -> dict[str, Any]:
     appointment_id = str(appointment_id)
     booking = None
@@ -339,8 +447,6 @@ def ensure_appointment_for_checkin(appointment_id: int | str, phone: str, bookin
             raise RuntimeError(f"Booking {booking_id} não encontrado.")
         if normalize_phone(booking.get("phone", "")) != phone:
             raise PermissionError("Appointment não pertence ao telefone informado.")
-        if str(booking.get("appointment_id") or "") and str(booking.get("appointment_id")) != appointment_id:
-            raise ValueError("Appointment não pertence ao booking informado.")
     else:
         bookings = [item for item in [get_latest_booking_by_phone(phone)] if item]
         booking = next((item for item in bookings if str(item.get("appointment_id") or "") == appointment_id), None)
@@ -376,7 +482,9 @@ def send_checkout_to_partner(appointment_id: int | str, phone: str = "") -> dict
         raise ValueError("Check-out só pode ser enviado depois de checked_in.")
 
     message = "Você já finalizou este atendimento?"
-    response_payload = send_zapi_checkout_button(phone, message, str(appointment_id))
+    response_payload = send_zapi_checkout_button(
+        phone, message, str(appointment_id), agenda_data_for_appointment(appointment)
+    )
     append_fake_sent_message(phone, "checkout", message, response_payload)
     stored_appointment = mark_appointment_checkout_sent(appointment_id, whatsapp_provider(), response_payload)
     AGENDA_STATE[phone] = {
@@ -468,7 +576,8 @@ def retry_pending_gestao77_syncs() -> dict[str, Any]:
         appointment_id = appointment["appointment_id"]
         status = appointment["local_status"]
         try:
-            response = update_appointment_status(appointment_id, status)
+            address = str(appointment.get("checkin_address") or "") if status == "checked_in" else ""
+            response = update_appointment_status(appointment_id, status, address)
             results.append({"entity_type": "appointment", "entity_id": appointment_id, "status": status, "ok": True, "response": response})
         except Exception as exc:
             results.append({"entity_type": "appointment", "entity_id": appointment_id, "status": status, "ok": False, "error": str(exc)})
@@ -513,10 +622,12 @@ def no_show_reason_from_status(status: str) -> str:
     }.get(prefix, "")
 
 
-def agenda_data_from_booking(booking: dict[str, Any]) -> dict[str, str]:
+def agenda_data_from_booking(booking: dict[str, Any], appointment: dict[str, Any] | None = None) -> dict[str, str]:
     payload = booking.get("payload") or {}
     appointments = payload.get("appointments") if isinstance(payload.get("appointments"), list) else []
-    appointment = select_today_appointment(appointments) or (appointments[0] if appointments and isinstance(appointments[0], dict) else {})
+    appointment = appointment or select_today_appointment(appointments) or (
+        appointments[0] if appointments and isinstance(appointments[0], dict) else {}
+    )
     customer = appointment.get("customer") if isinstance(appointment.get("customer"), dict) else {}
     return {
         "client_name": str(payload.get("name") or booking.get("partner_name") or "Cooperado").strip(),
@@ -524,8 +635,16 @@ def agenda_data_from_booking(booking: dict[str, Any]) -> dict[str, str]:
         "schedule_date": str(payload.get("date") or payload.get("schedule_date") or appointment.get("start_at") or "").strip(),
         "schedule_time": str(payload.get("time") or payload.get("schedule_time") or "").strip(),
         "service": str(payload.get("service") or customer.get("name") or "Escala da cooperativa").strip(),
-        "appointment_id": str(payload.get("today_appointment_id") or payload.get("first_appointment_id") or appointment.get("id") or "").strip(),
+        "appointment_id": str(appointment.get("id") or payload.get("today_appointment_id") or payload.get("first_appointment_id") or "").strip(),
     }
+
+
+def agenda_data_for_appointment(appointment: dict[str, Any]) -> dict[str, str]:
+    """Dados da escala para mensagens de um atendimento já registrado localmente."""
+    booking = get_booking(appointment.get("booking_id") or "") or {}
+    details = appointment.get("payload") if isinstance(appointment.get("payload"), dict) else {}
+    details = {**details, "id": appointment.get("appointment_id")}
+    return agenda_data_from_booking(booking, details)
 
 
 def select_today_appointment(appointments: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -730,6 +849,25 @@ def run_full_assisted_test(phone: str, client_name: str = "", force_new_cooperat
         seed_test_cooperator(phone, client_name)
 
     return seed_test_booking_and_send(phone, client_name)
+
+
+def run_test_for_existing_cooperator(phone: str) -> dict[str, Any]:
+    """Teste assistido para um cooperado que já existe na 77Gestão: nunca cria
+    cooperado novo. Sem aceite, envia o termo; com aceite, cria e envia uma
+    escala de teste para ele."""
+    from nova_guarda.onboarding import send_terms_to_phone
+
+    phone = normalize_phone(phone)
+    if not phone:
+        raise ValueError("Informe o telefone do cooperado de teste.")
+    cooperator = get_cooperator(phone)
+    if not cooperator or cooperator.get("onboarding_status") != "accepted":
+        terms = send_terms_to_phone(phone, source="teste")
+        if not terms.get("ok"):
+            raise ValueError(terms.get("error") or terms.get("reason") or "Não foi possível enviar o termo.")
+        return {"action": "terms_sent", "phone": phone}
+    result = seed_test_booking_and_send(phone, cooperator.get("partner_name") or "")
+    return {"action": "booking_sent", "phone": phone, **result}
 
 
 def reset_test_phone(phone: str) -> dict[str, int]:

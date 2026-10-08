@@ -13,6 +13,12 @@ WHATSAPP_OFFICIAL_TOKEN = os.getenv("WHATSAPP_OFFICIAL_TOKEN", "").strip()
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "").strip()
 WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "").strip()
 TERMS_DOCUMENT_URL = os.getenv("TERMS_DOCUMENT_URL", "").strip()
+# Templates aprovados na Meta, usados para iniciar conversa fora da janela de 24h.
+WHATSAPP_TEMPLATE_LANGUAGE = os.getenv("WHATSAPP_TEMPLATE_LANGUAGE", "pt_BR").strip()
+WHATSAPP_TEMPLATE_TERMS = os.getenv("WHATSAPP_TEMPLATE_TERMS", "nova_guarda_ativacao_termo").strip()
+WHATSAPP_TEMPLATE_BOOKING = os.getenv("WHATSAPP_TEMPLATE_BOOKING", "nova_guarda_escala_confirmacao_v2").strip()
+WHATSAPP_TEMPLATE_CHECKIN = os.getenv("WHATSAPP_TEMPLATE_CHECKIN", "nova_guarda_checkin_atendimento_v2").strip()
+WHATSAPP_TEMPLATE_CHECKOUT = os.getenv("WHATSAPP_TEMPLATE_CHECKOUT", "nova_guarda_checkout_atendimento_v3").strip()
 DEFAULT_PUBLIC_BASE_URL = "https://testezapi.77indicadores.com.br/webhook"
 
 PACKAGE_DIR = Path(__file__).resolve().parent

@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import json
 import logging
 import os
 import threading
@@ -14,6 +15,7 @@ from werkzeug.security import check_password_hash
 load_dotenv(encoding="utf-8-sig")
 
 import nova_guarda.services as services
+from nova_guarda.alerts import handle_delivery_failure, raise_alert
 from nova_guarda.automation import run_automation_once
 from nova_guarda.gestao77_service import (
     list_pending_partner_bookings,
@@ -22,21 +24,29 @@ from nova_guarda.gestao77_service import (
     retry_pending_gestao77_syncs,
     mark_appointment_checked_out,
     mark_booking_sent,
+    request_checkin_location,
     reset_test_phone,
     run_full_assisted_test,
+    run_test_for_existing_cooperator,
     send_booking_to_partner,
     send_checkin_to_partner,
     send_checkout_to_partner,
     sync_appointment_checkout,
     sync_booking_reply_for_phone,
+    sync_checkin_location_for_phone,
     sync_checkin_for_phone,
 )
 from nova_guarda.onboarding import (
     accept_terms,
+    add_test_cooperator,
+    dispatch_pending_terms,
     ensure_operational_access,
     handle_activation_request,
     is_activation_command,
+    list_test_candidates,
+    test_cooperators,
     reject_terms,
+    send_terms_to_phone,
 )
 from nova_guarda.config import (
     PORT,
@@ -48,15 +58,20 @@ from nova_guarda.config import (
 from nova_guarda.state import AGENDA_STATE, LOCATION_LINKS, RECEIVED_EVENTS, TERMS_STATE
 from nova_guarda.storage import (
     all_settings,
+    claim_webhook_event,
     dashboard_metrics,
+    get_appointment_awaiting_location,
     get_cooperator,
     init_db,
+    list_alerts,
     list_appointments,
     list_bookings,
     list_conversation_events,
     list_cooperators,
     list_poller_runs,
     list_sync_events,
+    release_webhook_event,
+    resolve_alert,
     save_conversation_event,
     set_settings,
     upsert_booking,
@@ -94,6 +109,7 @@ _POLLER_LOCK = threading.Lock()
 from nova_guarda.flows import (
     agenda_data_from_payload,
     agenda_status_label,
+    booking_id_from_reply,
     checkin_status_label,
     classify_agenda_reply,
     classify_checkin_reply,
@@ -134,6 +150,7 @@ from nova_guarda.services import (
     send_zapi_agenda_buttons,
     send_zapi_checkin_options,
     send_zapi_late_buttons,
+    send_zapi_location_request,
     send_zapi_no_show_reasons,
     send_zapi_terms_buttons,
     send_zapi_text,
@@ -151,8 +168,78 @@ def append_conversation_event(event: dict) -> None:
         logger.exception("Erro ao persistir evento de conversa: %s", exc)
 
 
+FALLBACK_REPLY_INTERVAL_SECONDS = 600
+_FALLBACK_REPLIED_AT: dict[str, float] = {}
+
+
+def webhook_event_id(payload: dict) -> str:
+    """Chave de deduplicação: o WhatsApp reentrega o mesmo evento, e um mesmo
+    id de mensagem recebe vários status (sent, delivered, failed)."""
+    message_id = str(payload.get("messageId") or "").strip()
+    if not message_id:
+        return ""
+    if payload.get("type") == "MessageStatusCallback":
+        return f"status:{message_id}:{str(payload.get('status') or '').lower()}"
+    return f"message:{message_id}"
+
+
 def process_webhook_payload(payload: dict) -> None:
     payload = normalize_incoming_whatsapp_payload(payload)
+    event_id = webhook_event_id(payload)
+    if event_id and not claim_webhook_event(event_id):
+        logger.info("Evento de webhook repetido ignorado: %s", event_id)
+        return
+    try:
+        handle_webhook_payload(payload)
+    except Exception:
+        # Libera o evento para a reentrega do provider processar de novo.
+        if event_id:
+            release_webhook_event(event_id)
+        raise
+
+
+def reply_unrecognized_message(phone: str) -> None:
+    """Mensagem que não é botão nem comando: em vez de silêncio, devolve o
+    próximo passo do cooperado. Limitado por telefone para não virar spam."""
+    cooperator = get_cooperator(phone)
+    status = (cooperator or {}).get("onboarding_status")
+    if status not in {"terms_sent", "accepted"}:
+        return
+    now = br_now().timestamp()
+    if now - _FALLBACK_REPLIED_AT.get(phone, 0) < FALLBACK_REPLY_INTERVAL_SECONDS:
+        return
+    _FALLBACK_REPLIED_AT[phone] = now
+
+    try:
+        if status == "terms_sent":
+            reply = build_terms_buttons_message()
+            response_payload = send_zapi_terms_buttons(phone)
+        elif get_appointment_awaiting_location(phone):
+            reply = build_checkin_reply("arrived")
+            response_payload = send_zapi_location_request(phone, reply)
+        else:
+            reply = (
+                "Não consegui entender sua mensagem. Para responder escala, check-in ou check-out, "
+                "use os botões das mensagens da Nova Guarda. Se precisar de ajuda, fale com a equipe."
+            )
+            response_payload = send_zapi_text(phone, reply)
+        append_conversation_event(
+            {
+                "received_at": br_timestamp(),
+                "payload": {
+                    "type": "AutoReply",
+                    "phone": phone,
+                    "status": "unrecognized",
+                    "text": {"message": reply},
+                    "response": response_payload,
+                },
+            }
+        )
+    except (RuntimeError, requests.RequestException, ValueError) as exc:
+        logger.exception("Erro ao responder mensagem não reconhecida: %s", exc)
+
+
+def handle_webhook_payload(payload: dict) -> None:
     logger.info("Payload recebido do WhatsApp: %s", payload)
     append_conversation_event(
         {
@@ -160,6 +247,15 @@ def process_webhook_payload(payload: dict) -> None:
             "payload": payload,
         }
     )
+
+    if payload.get("type") == "MessageStatusCallback" and str(payload.get("status") or "").lower() == "failed":
+        result = handle_delivery_failure(
+            str(payload.get("messageId") or ""),
+            normalize_phone(str(payload.get("phone", ""))),
+            str(payload.get("error") or ""),
+        )
+        logger.warning("Mensagem não entregue pelo WhatsApp: %s -> %s", payload, result)
+        return
 
     if payload.get("type") == "ReceivedCallback" and not payload.get("fromMe"):
         phone = normalize_phone(str(payload.get("phone", "")).strip())
@@ -234,42 +330,50 @@ def process_webhook_payload(payload: dict) -> None:
         elif phone and isinstance(location, dict) and not payload.get("isGroup"):
             latitude = location.get("latitude")
             longitude = location.get("longitude")
-            state = AGENDA_STATE.setdefault(
-                phone,
-                {
-                    "phone": phone,
-                    "status": "checkin_sent",
-                    "status_label": checkin_status_label("checkin_sent"),
-                    "agenda": {},
-                    "history": [],
-                },
-            )
-            state["status"] = "location_received"
-            state["status_label"] = checkin_status_label("location_received")
-            state["location"] = {
+            if latitude is None or longitude is None:
+                return
+            maps_url = f"https://www.google.com/maps?q={latitude},{longitude}"
+            address = str(location.get("address") or "").strip()
+            if not address:
+                try:
+                    address = reverse_geocode(float(latitude), float(longitude))
+                except (RuntimeError, requests.RequestException, TypeError, ValueError) as exc:
+                    logger.exception("Erro ao converter localização em endereço: %s", exc)
+            address = address or maps_url
+            location_payload = {
                 "latitude": latitude,
                 "longitude": longitude,
-                "address": location.get("address", ""),
+                "address": address,
                 "url": location.get("url", ""),
-                "maps_url": f"https://www.google.com/maps?q={latitude},{longitude}" if latitude and longitude else "",
+                "maps_url": maps_url,
             }
-            state["updated_at"] = br_timestamp()
-            state.setdefault("history", []).append(
-                {
-                    "at": state["updated_at"],
-                    "reply": "location",
-                    "to": "location_received",
-                    "location": state["location"],
-                }
-            )
+
             sync_result = None
+            reply_status = "checked_in"
             try:
-                sync_result = sync_checkin_for_phone(phone, "location_received", state["location"].get("address", ""))
-            except (RuntimeError, requests.RequestException, ValueError) as exc:
-                logger.exception("Erro ao sincronizar check-in no 77Gestão: %s", exc)
+                sync_result = sync_checkin_location_for_phone(phone, latitude, longitude, address)
+            except (KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
+                logger.exception("Erro ao registrar check-in com localização: %s", exc)
+                reply_status = "presence_sync_error"
+
+            if reply_status == "presence_sync_error":
+                reply = "Não consegui registrar sua presença agora. Fale com a equipe da Nova Guarda."
+            elif sync_result is None:
+                reply_status = "location_ignored"
+                reply = "Recebemos sua localização, mas não há check-in aguardando localização neste momento."
+            else:
+                reply = f"Check-in registrado com sucesso pela Nova Guarda.\nLocal: {address}"
+                state = AGENDA_STATE.setdefault(phone, {"phone": phone, "agenda": {}, "history": []})
+                state["status"] = "checked_in"
+                state["status_label"] = checkin_status_label("checked_in")
+                state["location"] = location_payload
+                state["updated_at"] = br_timestamp()
+                state["appointment_id"] = str(sync_result.get("appointment_id", ""))
+                state.setdefault("history", []).append(
+                    {"at": state["updated_at"], "reply": "location", "to": "checked_in", "location": location_payload}
+                )
 
             try:
-                reply = build_checkin_reply("location_received")
                 response_payload = send_zapi_text(phone, reply)
                 append_conversation_event(
                     {
@@ -277,7 +381,8 @@ def process_webhook_payload(payload: dict) -> None:
                         "payload": {
                             "type": "AutoReply",
                             "phone": phone,
-                            "status": "location_received",
+                            "status": reply_status,
+                            "location": location_payload,
                             "text": {"message": reply},
                             "gestao77_sync": sync_result,
                             "response": response_payload,
@@ -289,8 +394,8 @@ def process_webhook_payload(payload: dict) -> None:
 
         elif phone and decision and not payload.get("isGroup"):
             try:
-                sync_result = sync_booking_reply_for_phone(phone, decision)
-            except (KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
+                sync_result = sync_booking_reply_for_phone(phone, decision, booking_id_from_reply(text))
+            except (PermissionError, KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
                 logger.exception("Erro ao sincronizar resposta da escala no 77Gestão: %s", exc)
                 reply = "Não consegui registrar sua resposta da escala agora. Fale com a equipe da Nova Guarda."
                 try:
@@ -374,6 +479,15 @@ def process_webhook_payload(payload: dict) -> None:
             if checkin_decision.startswith(("late_15:", "late_30:", "late_60:")):
                 try:
                     local_result = record_local_late(phone, checkin_decision)
+                    if not local_result["idempotent"]:
+                        raise_alert(
+                            "late",
+                            "appointment",
+                            local_result["appointment_id"],
+                            phone,
+                            f"{phone} avisou atraso de {local_result['late_minutes']} min no atendimento {local_result['appointment_id']}.",
+                            "late_reported",
+                        )
                     reply = f"Atraso de {local_result['late_minutes']} minutos registrado pela Nova Guarda."
                     response_payload = send_zapi_text(phone, reply)
                     append_conversation_event(
@@ -400,6 +514,15 @@ def process_webhook_payload(payload: dict) -> None:
             if checkin_decision.startswith(("reason_personal:", "reason_access:", "reason_client_cancelled:", "reason_other:")):
                 try:
                     local_result = record_local_no_show(phone, checkin_decision)
+                    if not local_result["idempotent"]:
+                        # Sem entity_status: só a equipe fecha, depois de resolver a cobertura.
+                        raise_alert(
+                            "no_show",
+                            "appointment",
+                            local_result["appointment_id"],
+                            phone,
+                            f"{phone} NÃO VAI ao atendimento {local_result['appointment_id']}: {local_result['reason']}.",
+                        )
                     reply = f"Não comparecimento registrado com motivo: {local_result['reason']}."
                     response_payload = send_zapi_text(phone, reply)
                     append_conversation_event(
@@ -424,14 +547,49 @@ def process_webhook_payload(payload: dict) -> None:
                         pass
                 return
 
+            if checkin_decision in {"arrived", "arrived_link"} or checkin_decision.startswith(
+                ("checkin_arrived:", "checkin2_arrived:")
+            ):
+                # “Cheguei” não conclui o check-in: a localização do WhatsApp é
+                # obrigatória e só ela registra a presença na 77Gestão.
+                try:
+                    local_result = request_checkin_location(phone, checkin_decision)
+                    reply = build_checkin_reply("arrived")
+                    reply_status = "location_requested"
+                    response_payload = send_zapi_location_request(phone, reply)
+                except (PermissionError, KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
+                    logger.exception("Erro ao solicitar localização do check-in: %s", exc)
+                    local_result = None
+                    reply = "Não consegui registrar sua presença agora. Fale com a equipe da Nova Guarda."
+                    reply_status = "presence_sync_error"
+                    try:
+                        response_payload = send_zapi_text(phone, reply)
+                    except (RuntimeError, requests.RequestException, ValueError):
+                        return
+                append_conversation_event(
+                    {
+                        "received_at": br_timestamp(),
+                        "payload": {
+                            "type": "AutoReply",
+                            "phone": phone,
+                            "status": reply_status,
+                            "text": {"message": reply},
+                            "local_event": local_result,
+                            "response": response_payload,
+                        },
+                    }
+                )
+                return
+
+            if not checkin_decision.startswith("checkout_confirm:"):
+                # Respostas digitadas sem appointment (ex.: "vou atrasar") não
+                # identificam o atendimento; o cooperado usa os botões.
+                return
+
             try:
-                if checkin_decision.startswith("checkout_confirm:"):
-                    appointment_id = checkin_decision.split(":", 1)[1]
-                    sync_result = sync_appointment_checkout(appointment_id, event_id=checkin_decision)
-                    next_status = "checked_out"
-                else:
-                    sync_result = sync_checkin_for_phone(phone, checkin_decision)
-                    next_status = "checked_in"
+                appointment_id = checkin_decision.split(":", 1)[1]
+                sync_result = sync_appointment_checkout(appointment_id, event_id=checkin_decision)
+                next_status = "checked_out"
             except (KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
                 logger.exception("Erro ao sincronizar presença no 77Gestão: %s", exc)
                 reply = "Não consegui registrar sua presença agora. Fale com a equipe da Nova Guarda."
@@ -484,12 +642,35 @@ def process_webhook_payload(payload: dict) -> None:
             except (RuntimeError, requests.RequestException, ValueError) as exc:
                 logger.exception("Erro ao enviar resposta automática de check-in: %s", exc)
 
+        elif phone and not payload.get("isGroup"):
+            reply_unrecognized_message(phone)
+
+
 def normalize_incoming_whatsapp_payload(payload: dict) -> dict:
     if payload.get("type") or payload.get("phone"):
         return payload
 
     try:
         value = payload["entry"][0]["changes"][0]["value"]
+    except (KeyError, IndexError, TypeError):
+        return payload
+
+    statuses = value.get("statuses") if isinstance(value, dict) else None
+    if isinstance(statuses, list) and statuses and isinstance(statuses[0], dict):
+        status = statuses[0]
+        errors = status.get("errors") if isinstance(status.get("errors"), list) else []
+        error = errors[0] if errors and isinstance(errors[0], dict) else {}
+        return {
+            "type": "MessageStatusCallback",
+            "phone": normalize_phone(str(status.get("recipient_id", ""))),
+            "messageId": str(status.get("id", "")),
+            "status": str(status.get("status", "")),
+            "error": " - ".join(
+                str(part) for part in (error.get("code"), error.get("title") or error.get("message")) if part
+            ),
+        }
+
+    try:
         message = value["messages"][0]
     except (KeyError, IndexError, TypeError):
         return payload
@@ -500,6 +681,7 @@ def normalize_incoming_whatsapp_payload(payload: dict) -> dict:
         "fromMe": False,
         "isGroup": False,
         "phone": normalize_phone(str(message.get("from", ""))),
+        "messageId": str(message.get("id", "")),
         "chatName": contact.get("profile", {}).get("name", ""),
         "senderName": contact.get("profile", {}).get("name", ""),
     }
@@ -518,6 +700,10 @@ def normalize_incoming_whatsapp_payload(payload: dict) -> dict:
                 "selectedRowId": reply.get("id", ""),
                 "title": reply.get("title", ""),
             }
+    elif message_type == "button":
+        # Resposta rápida de template: o payload é o id que enviamos no botão.
+        button = message.get("button", {})
+        normalized["buttonReply"] = {"id": button.get("payload", ""), "message": button.get("text", "")}
     elif message_type == "location":
         location = message.get("location", {})
         normalized["location"] = {
@@ -707,12 +893,49 @@ def create_app() -> Flask:
             bookings=list_bookings()[:10],
             appointments=list_appointments()[:10],
             sync_events=list_sync_events(8),
+            alerts=list_alerts(open_only=True, limit=50),
+            test_cooperators=test_cooperators(),
         )
+
+    @app.post("/alertas/<int:alert_id>/resolver")
+    def alerta_resolver(alert_id: int):
+        resolve_alert(alert_id)
+        flash("Alerta marcado como resolvido.")
+        return redirect(url_for("index"))
 
     @app.get("/cooperados")
     def cooperados():
         status = request.args.get("status") or None
         return render_template("cooperados.html", rows=list_cooperators(status), status_filter=status)
+
+    @app.post("/cooperados/enviar-termo")
+    def cooperados_enviar_termo():
+        phone = normalize_phone(request.form.get("phone", ""))
+        try:
+            result = send_terms_to_phone(phone)
+        except (RuntimeError, requests.RequestException, ValueError) as exc:
+            logger.exception("Erro ao enviar termo manualmente: %s", exc)
+            result = {"ok": False, "error": str(exc)}
+        if result.get("ok"):
+            flash(f"Termo enviado para {phone}.")
+        else:
+            flash(f"Termo não enviado para {phone}: {result.get('error') or result.get('reason')}")
+        return redirect(request.referrer or url_for("cooperados"))
+
+    @app.post("/cooperados/enviar-termos-pendentes")
+    def cooperados_enviar_termos_pendentes():
+        now = br_now()
+        try:
+            with _POLLER_LOCK:
+                results = dispatch_pending_terms(list_pending_partner_bookings(now.month, now.year), source="manual")
+        except (RuntimeError, requests.RequestException, ValueError) as exc:
+            logger.exception("Erro ao enviar termos pendentes: %s", exc)
+            flash(f"Falha ao enviar termos pendentes: {exc}")
+            return redirect(url_for("cooperados"))
+        sent_count = len([item for item in results if item.get("ok")])
+        fail_count = len([item for item in results if item.get("error")])
+        flash(f"Termos pendentes: {sent_count} envio(s), {fail_count} falha(s).")
+        return redirect(url_for("cooperados"))
 
     @app.get("/escalas")
     def escalas():
@@ -754,7 +977,60 @@ def create_app() -> Flask:
 
     @app.get("/configuracoes")
     def configuracoes():
-        return render_template("configuracoes.html", cfg=all_settings())
+        cfg = all_settings()
+        selected = test_cooperators()
+        candidates: list[dict] = []
+        candidates_error = ""
+        if cfg.get("operation_mode") == "test":
+            try:
+                candidates = list_test_candidates()
+            except (RuntimeError, requests.RequestException, ValueError) as exc:
+                logger.exception("Erro ao listar cooperados da 77Gestão: %s", exc)
+                candidates_error = str(exc)
+            # Quem já está marcado aparece mesmo se a 77Gestão não responder.
+            listed = {item["phone"] for item in candidates}
+            candidates = [item for item in selected if item["phone"] not in listed] + candidates
+        statuses = {row["phone"]: row["onboarding_status"] for row in list_cooperators()}
+        return render_template(
+            "configuracoes.html",
+            cfg=cfg,
+            test_cooperators=selected,
+            test_candidates=candidates,
+            test_candidates_error=candidates_error,
+            test_selected_phones={item["phone"] for item in selected},
+            cooperator_statuses=statuses,
+        )
+
+    @app.post("/teste-assistido/cooperados")
+    def teste_assistido_cooperados():
+        phones = {normalize_phone(value) for value in request.form.getlist("phones") if normalize_phone(value)}
+        known = {item["phone"]: item for item in test_cooperators()}
+        try:
+            known.update({item["phone"]: item for item in list_test_candidates()})
+        except (RuntimeError, requests.RequestException, ValueError) as exc:
+            logger.exception("Erro ao listar cooperados da 77Gestão: %s", exc)
+        selected = [known.get(phone, {"phone": phone, "partner_id": "", "name": ""}) for phone in sorted(phones)]
+        set_settings({"test_cooperators": json.dumps(selected, ensure_ascii=False)})
+        flash(f"Cooperados de teste salvos: {len(selected)}.")
+        return redirect(url_for("configuracoes"))
+
+    @app.post("/teste-assistido/escala")
+    def teste_assistido_escala():
+        phone = normalize_phone(request.form.get("phone", ""))
+        try:
+            result = run_test_for_existing_cooperator(phone)
+        except (PermissionError, ValueError) as exc:
+            flash(str(exc))
+            return redirect(url_for("configuracoes"))
+        except (RuntimeError, requests.RequestException) as exc:
+            logger.exception("Erro ao testar cooperado existente: %s", exc)
+            flash(f"Falha no teste: {exc}")
+            return redirect(url_for("configuracoes"))
+        if result["action"] == "terms_sent":
+            flash(f"{phone} ainda não aceitou o termo: termo enviado. Depois do aceite, clique de novo para criar a escala.")
+        else:
+            flash(f"Escala de teste {result['booking_id']} criada e enviada para {phone}.")
+        return redirect(url_for("configuracoes"))
 
     @app.post("/configuracoes")
     def configuracoes_save():
@@ -777,8 +1053,20 @@ def create_app() -> Flask:
         auto_checkin_enabled = "1" if request.form.get("auto_checkin_enabled") == "1" else "0"
         checkin_lead_minutes = str(parse_positive_int(request.form.get("checkin_lead_minutes"), 120, minimum=0, maximum=10080))
         checkout_after_minutes = str(parse_positive_int(request.form.get("checkout_after_minutes"), 60, minimum=0, maximum=10080))
+        terms_auto_enabled = "1" if request.form.get("terms_auto_enabled") == "1" else "0"
+        terms_send_hour = str(parse_positive_int(request.form.get("terms_send_hour"), 7, minimum=0, maximum=23))
         set_settings(
             {
+                "meta_templates_enabled": "1" if request.form.get("meta_templates_enabled") == "1" else "0",
+                "terms_auto_enabled": terms_auto_enabled,
+                "terms_send_hour": terms_send_hour,
+                "booking_reminder_hours": str(
+                    parse_positive_int(request.form.get("booking_reminder_hours"), 12, minimum=1, maximum=720)
+                ),
+                "presence_reminder_minutes": str(
+                    parse_positive_int(request.form.get("presence_reminder_minutes"), 15, minimum=1, maximum=1440)
+                ),
+                "alert_phone": normalize_phone(request.form.get("alert_phone", "")),
                 "operation_mode": operation_mode,
                 "active_provider": provider,
                 "gestao77_mode": gestao77_mode,
@@ -813,6 +1101,9 @@ def create_app() -> Flask:
             logger.exception("Erro ao rodar teste assistido completo: %s", exc)
             flash(f"Falha no teste assistido: {exc}")
             return redirect(url_for("configuracoes"))
+        # Telefone digitado entra na lista de teste para o check-in/check-out
+        # automático continuar funcionando com a trava do modo teste.
+        add_test_cooperator(phone, name)
         flash(f"Teste completo rodado: escala {result['booking_id']} criada e enviada para {phone}.")
         return redirect(url_for("configuracoes"))
 

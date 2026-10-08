@@ -185,6 +185,23 @@ def init_db() -> None:
                 phone TEXT,
                 payload_json TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS alerts (
+                id {id_pk},
+                kind TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                phone TEXT,
+                message TEXT NOT NULL,
+                entity_status TEXT,
+                created_at TEXT NOT NULL,
+                resolved_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS processed_webhook_events (
+                event_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL
+            );
             """
         )
         ensure_column(conn, "bookings", "provider", "TEXT")
@@ -208,6 +225,13 @@ def init_db() -> None:
         ensure_column(conn, "appointments", "no_show_reported_at", "TEXT")
         ensure_column(conn, "appointments", "checkin_synced_at", "TEXT")
         ensure_column(conn, "appointments", "checkout_synced_at", "TEXT")
+        for table in ("bookings", "appointments"):
+            ensure_column(conn, table, "reminder_status", "TEXT")
+            ensure_column(conn, table, "reminder_at", "TEXT")
+            ensure_column(conn, table, "alert_status", "TEXT")
+        ensure_column(conn, "appointments", "checkin_latitude", "TEXT")
+        ensure_column(conn, "appointments", "checkin_longitude", "TEXT")
+        ensure_column(conn, "appointments", "checkin_address", "TEXT")
 
 
 SETTING_DEFAULTS = {
@@ -224,6 +248,15 @@ SETTING_DEFAULTS = {
     "auto_checkin_enabled": "1",
     "checkin_lead_minutes": "120",
     "checkout_after_minutes": "60",
+    "terms_auto_enabled": "1",
+    "terms_send_hour": "7",
+    "terms_last_dispatch_date": "",
+    "terms_dispatch_attempts": "",
+    "booking_reminder_hours": "12",
+    "presence_reminder_minutes": "15",
+    "alert_phone": "",
+    "test_cooperators": "[]",
+    "meta_templates_enabled": "0",
 }
 
 EDITABLE_SETTINGS = set(SETTING_DEFAULTS)
@@ -580,11 +613,64 @@ def update_appointment_message_state(
     return get_appointment(appointment_id) or {}
 
 
+def mark_appointment_location_pending(appointment_id: str | int) -> tuple[bool, dict[str, Any]]:
+    """Cooperado disse que chegou: o check-in só é concluído quando a
+    localização do WhatsApp chegar."""
+    init_db()
+    now = timestamp()
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM appointments WHERE appointment_id = ?", (str(appointment_id),)).fetchone()
+        if not row:
+            raise KeyError(f"Appointment {appointment_id} não encontrado.")
+        current = row["local_status"]
+        if current == "location_pending":
+            return False, row_to_appointment(row)
+        if current not in {"checkin_pending", "late_reported"}:
+            raise ValueError(f"Transição inválida: {current} -> location_pending")
+        conn.execute(
+            "UPDATE appointments SET local_status = 'location_pending', updated_at = ? WHERE appointment_id = ?",
+            (now, str(appointment_id)),
+        )
+    return True, get_appointment(appointment_id) or {}
+
+
+def get_appointment_awaiting_location(phone: str) -> dict[str, Any] | None:
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT * FROM appointments
+            WHERE phone = ? AND local_status = 'location_pending'
+            ORDER BY updated_at DESC LIMIT 1
+            """,
+            (phone,),
+        ).fetchone()
+    return row_to_appointment(row) if row else None
+
+
+def save_appointment_checkin_location(
+    appointment_id: str | int,
+    latitude: Any,
+    longitude: Any,
+    address: str,
+) -> None:
+    init_db()
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE appointments
+            SET checkin_latitude = ?, checkin_longitude = ?, checkin_address = ?, updated_at = ?
+            WHERE appointment_id = ?
+            """,
+            (str(latitude), str(longitude), address, timestamp(), str(appointment_id)),
+        )
+
+
 def transition_appointment_checkin(appointment_id: str | int, event_id: str = "") -> tuple[bool, dict[str, Any]]:
     return transition_appointment_presence(
         appointment_id,
         target_status="checked_in",
-        allowed_from={"checkin_pending"},
+        allowed_from={"location_pending"},
         event_column="inbound_checkin_event_id",
         time_column="checked_in_at",
         event_id=event_id,
@@ -1023,7 +1109,7 @@ def delete_local_data_for_phone(phone: str) -> dict[str, int]:
     phone = phone.strip()
     counts: dict[str, int] = {}
     with connect() as conn:
-        for table in ("conversation_events", "appointments", "bookings", "cooperators"):
+        for table in ("conversation_events", "alerts", "appointments", "bookings", "cooperators"):
             cursor = conn.execute(f"DELETE FROM {table} WHERE phone = ?", (phone,))
             counts[table] = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
     return counts
@@ -1059,3 +1145,186 @@ def row_to_conversation_event(row: Any) -> dict[str, Any]:
     data = dict(row)
     data["payload"] = json.loads(data.pop("payload_json") or "{}")
     return data
+
+
+ENTITY_TABLES = {"booking": ("bookings", "booking_id"), "appointment": ("appointments", "appointment_id")}
+
+
+def update_booking_appointments(booking_id: str | int, appointments: list[dict[str, Any]], refreshed_at: str) -> None:
+    """Substitui a lista de appointments da escala pela versão atual da 77Gestão."""
+    booking = get_booking(booking_id)
+    if not booking:
+        return
+    payload = dict(booking.get("payload") or {})
+    payload["appointments"] = appointments
+    payload["appointments_refreshed_at"] = refreshed_at
+    with connect() as conn:
+        conn.execute(
+            "UPDATE bookings SET payload_json = ? WHERE booking_id = ?",
+            (json.dumps(payload, ensure_ascii=False), str(booking_id)),
+        )
+
+
+def get_booking_by_message_id(message_id: str) -> dict[str, Any] | None:
+    init_db()
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM bookings WHERE whatsapp_message_id = ?", (message_id,)).fetchone()
+    return row_to_booking(row) if row else None
+
+
+def get_appointment_by_message_id(message_id: str) -> dict[str, Any] | None:
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM appointments WHERE checkin_message_id = ? OR checkout_message_id = ?",
+            (message_id, message_id),
+        ).fetchone()
+    return row_to_appointment(row) if row else None
+
+
+def revert_undelivered_booking(booking_id: str | int) -> None:
+    """Escala cuja mensagem não foi entregue volta para a fila de envio."""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE bookings SET local_status = 'pending', updated_at = ? WHERE booking_id = ? AND local_status = 'sent'",
+            (timestamp(), str(booking_id)),
+        )
+
+
+def revert_undelivered_checkin(appointment_id: str | int) -> None:
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE appointments SET local_status = 'sent', updated_at = ?
+            WHERE appointment_id = ? AND local_status = 'checkin_pending'
+            """,
+            (timestamp(), str(appointment_id)),
+        )
+
+
+def mark_entity_reminded(entity_type: str, entity_id: str | int, status: str) -> None:
+    table, key = ENTITY_TABLES[entity_type]
+    with connect() as conn:
+        conn.execute(
+            f"UPDATE {table} SET reminder_status = ?, reminder_at = ? WHERE {key} = ?",
+            (status, timestamp(), str(entity_id)),
+        )
+
+
+def mark_entity_alerted(entity_type: str, entity_id: str | int, status: str) -> None:
+    table, key = ENTITY_TABLES[entity_type]
+    with connect() as conn:
+        conn.execute(f"UPDATE {table} SET alert_status = ? WHERE {key} = ?", (status, str(entity_id)))
+
+
+def create_alert(
+    kind: str,
+    entity_type: str,
+    entity_id: str | int,
+    phone: str,
+    message: str,
+    entity_status: str = "",
+) -> bool:
+    """Abre um alerta para a equipe. Não duplica alerta aberto do mesmo tipo
+    para a mesma entidade. Retorna True quando um alerta novo foi criado."""
+    init_db()
+    with connect() as conn:
+        existing = conn.execute(
+            """
+            SELECT id FROM alerts
+            WHERE kind = ? AND entity_type = ? AND entity_id = ? AND resolved_at IS NULL
+            """,
+            (kind, entity_type, str(entity_id)),
+        ).fetchone()
+        if existing:
+            return False
+        conn.execute(
+            """
+            INSERT INTO alerts (kind, entity_type, entity_id, phone, message, entity_status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (kind, entity_type, str(entity_id), phone, message, entity_status, timestamp()),
+        )
+    return True
+
+
+def count_alerts(kind: str, entity_type: str, entity_id: str | int) -> int:
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS total FROM alerts WHERE kind = ? AND entity_type = ? AND entity_id = ?",
+            (kind, entity_type, str(entity_id)),
+        ).fetchone()
+    return int(row["total"]) if row else 0
+
+
+def list_alerts(open_only: bool = True, limit: int = 100) -> list[dict[str, Any]]:
+    init_db()
+    query = "SELECT * FROM alerts"
+    if open_only:
+        query += " WHERE resolved_at IS NULL"
+    query += " ORDER BY id DESC LIMIT ?"
+    with connect() as conn:
+        rows = conn.execute(query, (limit,)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def resolve_alert(alert_id: int | str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE alerts SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL",
+            (timestamp(), int(alert_id)),
+        )
+
+
+def auto_resolve_alerts() -> int:
+    """Fecha sozinho todo alerta cuja entidade já saiu do estado que o gerou
+    (ex.: o cooperado respondeu depois do alerta)."""
+    resolved = 0
+    for alert in list_alerts(open_only=True, limit=500):
+        if not alert.get("entity_status") or alert["entity_type"] not in ENTITY_TABLES:
+            continue
+        getter = get_booking if alert["entity_type"] == "booking" else get_appointment
+        entity = getter(alert["entity_id"])
+        if entity and entity.get("local_status") != alert["entity_status"]:
+            resolve_alert(alert["id"])
+            resolved += 1
+    return resolved
+
+
+def claim_webhook_event(event_id: str) -> bool:
+    """Registra o evento recebido. Retorna False se ele já foi processado
+    (o WhatsApp reentrega o mesmo evento mais de uma vez)."""
+    init_db()
+    with connect() as conn:
+        cursor = conn.execute(
+            "INSERT INTO processed_webhook_events (event_id, created_at) VALUES (?, ?) ON CONFLICT(event_id) DO NOTHING",
+            (event_id, timestamp()),
+        )
+        return cursor.rowcount == 1
+
+
+def release_webhook_event(event_id: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM processed_webhook_events WHERE event_id = ?", (event_id,))
+
+
+def purge_webhook_events(before: str) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM processed_webhook_events WHERE created_at < ?", (before,))
+
+
+def last_inbound_message_at(phone: str) -> str:
+    """Horário (dd/mm/aaaa hh:mm:ss) da última mensagem recebida do telefone,
+    usado para saber se a janela de 24h do WhatsApp está aberta."""
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT received_at FROM conversation_events
+            WHERE phone = ? AND event_type = 'ReceivedCallback'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (phone,),
+        ).fetchone()
+    return str(row["received_at"]) if row else ""

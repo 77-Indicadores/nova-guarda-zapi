@@ -107,9 +107,24 @@ Essa tela simula mensagens recebidas do cooperado e processa pelo mesmo caminho 
 
 ## 77Gestão
 
+### Autocorreção do fluxo
+
+O ciclo do poller não deixa nenhum estado parado em silêncio:
+
+- **Lembrete e alerta:** escala enviada sem resposta, check-in sem resposta, chegada sem localização, atraso sem chegada e check-out sem resposta recebem um lembrete após o prazo configurado (`Lembrete de escala` em horas, `Lembrete de presença` em minutos). Sem resposta pelo mesmo prazo de novo, vira alerta no Painel (e no `WhatsApp da equipe para alertas`, se configurado). O alerta fecha sozinho quando o cooperado responde.
+- **Não vou / atraso:** abrem alerta na hora. O de `Não vou` só fecha manualmente.
+- **Entrega:** status `failed` vindo do webhook da Meta devolve escala ou check-in para a fila uma única vez e abre alerta com o motivo; se falhar de novo, fica só o alerta.
+- **Check-in por atendimento:** cada appointment da escala confirmada recebe check-in na sua própria janela. A lista de appointments é reconciliada com a 77Gestão no máximo uma vez por hora; appointment removido ou cancelado lá deixa de receber.
+- **Botões de escala** carregam o booking (`booking_confirm:{id}`), então a resposta nunca cai em outra escala do mesmo telefone.
+- **Mês seguinte:** o ciclo automático consulta o mês atual e o próximo.
+- **Termo:** se o disparo diário falhar por erro do provider, os ciclos seguintes repetem só quem falhou (até 3 tentativas no dia) e o que restar vira alerta.
+- **Webhook:** eventos reentregues são ignorados pelo id da mensagem; mensagem não reconhecida de cooperado conhecido recebe orientação do próximo passo (no máximo uma a cada 10 minutos).
+
 ### Onboarding e gate local
 
 O cooperado só entra no fluxo operacional depois de iniciar a conversa pelo WhatsApp/Chat Dev com `ativar`, `iniciar` ou `começar`, ser validado na 77Gestão por telefone em `phones[]` e aceitar o termo.
+
+O cooperado não precisa mandar `ativar`: uma vez por dia, no primeiro ciclo do poller a partir das 07h (`Hora do termo` em `/configuracoes`), o sistema envia o termo para todo cooperado com escala pendente na 77Gestão que ainda não aceitou (`not_started` ou `terms_sent`). Quem aceitou ou recusou nunca recebe de novo. O mesmo envio pode ser feito manualmente em `/cooperados`, pelo botão `Enviar termo para pendentes` ou por cooperado (`Enviar termo` / `Reenviar termo`).
 
 Estados locais do onboarding:
 
@@ -152,6 +167,8 @@ sent/confirmed -> checkin_pending -> checked_in -> checkout_pending -> checked_o
 ```
 
 O check-in só é enviado para cooperado com termo `accepted`, booking local existente e appointment pertencente ao booking informado. O botão carrega o `appointment_id` no payload (`checkin_arrived:{appointment_id}`) para impedir que clique antigo altere outro appointment.
+
+A localização é obrigatória: o clique em `Sim, cheguei` deixa o appointment em `location_pending` e pede a localização atual pelo WhatsApp (na Cloud API oficial, com o botão nativo `Enviar localização`). Só quando a localização chega o appointment vira `checked_in` e o endereço é sincronizado com a 77Gestão; latitude, longitude e endereço ficam gravados no appointment local.
 
 Ordem de check-in:
 

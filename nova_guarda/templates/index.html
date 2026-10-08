@@ -12,10 +12,41 @@
 </div>
 
 <div class="card">
+  <p class="card-title">Alertas abertos <span class="badge {% if alerts %}badge-fail{% else %}badge-ok{% endif %}">{{ alerts|length }}</span></p>
+  <p class="card-sub">O que o fluxo não conseguiu resolver sozinho. Alertas de falta de resposta e de entrega fecham sozinhos quando o cooperado responde.</p>
+  {% if alerts %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Quando</th><th>Telefone</th><th>Alerta</th><th></th></tr></thead>
+      <tbody>
+      {% for alert in alerts %}
+      <tr>
+        <td>{{ alert.created_at|brt }}</td>
+        <td class="mono">{{ alert.phone or '-' }}</td>
+        <td>{{ alert.message }}</td>
+        <td>
+          <form method="post" action="{{ url_for('alerta_resolver', alert_id=alert.id) }}">
+            <button class="btn" type="submit">Resolver</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="muted text-sm">Nenhum alerta aberto.</p>
+  {% endif %}
+</div>
+
+<div class="card">
   <p class="card-title">Estado da operação</p>
   <p class="card-sub">As credenciais ficam no ambiente; o modo operacional fica persistido em banco.</p>
   <div class="row-gap">
     <span class="badge {% if settings.operation_mode == 'test' %}badge-warn{% else %}badge-ok{% endif %}">{{ 'Teste assistido' if settings.operation_mode == 'test' else 'Produção' }}</span>
+    {% if settings.operation_mode == 'test' %}
+    <span class="badge badge-warn">Modo teste: enviando só para {{ test_cooperators|length }} cooperado(s) de teste</span>
+    {% endif %}
     <span class="badge badge-fut">Provider: {{ settings.active_provider or 'env/default' }}</span>
     <span class="badge {% if settings.gestao77_mode == 'fake' %}badge-warn{% else %}badge-ok{% endif %}">77Gestão: {{ settings.gestao77_mode }}</span>
     <span class="badge {% if metrics.failed_syncs %}badge-fail{% else %}badge-ok{% endif %}">Falhas sync: {{ metrics.failed_syncs }}</span>
