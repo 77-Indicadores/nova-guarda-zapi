@@ -116,12 +116,14 @@
   <p class="card-sub">
     Com o modo <strong>Teste assistido</strong> ligado, a automação (termo, escala, check-in, check-out e lembretes)
     só envia mensagem para os cooperados marcados aqui. Ninguém fora desta lista recebe nada até o modo voltar para Produção.
+    No canal <strong>Chat Dev</strong> nada passa pelo WhatsApp: o bot escreve e o cooperado responde só na tela do Chat Dev,
+    com a 77Gestão funcionando igual.
   </p>
 
   {% if test_cooperators %}
   <div class="table-wrap" style="margin-bottom:16px">
     <table>
-      <thead><tr><th>Cooperado</th><th>Telefone</th><th>Termo</th><th>Ações</th></tr></thead>
+      <thead><tr><th>Cooperado</th><th>Telefone</th><th>Termo</th><th>Canal</th><th>Ações</th></tr></thead>
       <tbody>
       {% for item in test_cooperators %}
       {% set status = cooperator_statuses.get(item.phone, 'not_started') %}
@@ -130,7 +132,27 @@
         <td class="mono">{{ item.phone }}</td>
         <td><span class="badge {% if status == 'accepted' %}badge-ok{% elif status == 'rejected' %}badge-fail{% else %}badge-pend{% endif %}">{{ status|status_label }}</span></td>
         <td>
+          {% if item.channel == 'chat' %}
+          <span class="badge badge-warn">Chat Dev</span>
+          <form method="post" action="{{ url_for('teste_assistido_canal') }}" style="margin-top:6px">
+            <input type="hidden" name="phone" value="{{ item.phone }}">
+            <input type="hidden" name="channel" value="whatsapp">
+            <button class="btn" type="submit">Usar WhatsApp</button>
+          </form>
+          {% else %}
+          <span class="badge badge-ok">WhatsApp</span>
+          <form method="post" action="{{ url_for('teste_assistido_canal') }}" style="margin-top:6px">
+            <input type="hidden" name="phone" value="{{ item.phone }}">
+            <input type="hidden" name="channel" value="chat">
+            <button class="btn" type="submit" title="Nada sai pelo WhatsApp: as mensagens aparecem só no Chat Dev">Usar Chat Dev</button>
+          </form>
+          {% endif %}
+        </td>
+        <td>
           <div class="row-gap">
+            {% if item.channel == 'chat' %}
+            <a class="btn" href="{{ url_for('dev_chat', phone=item.phone, name=item.name) }}">Abrir Chat Dev</a>
+            {% endif %}
             <form method="post" action="{{ url_for('teste_assistido_escala') }}">
               <input type="hidden" name="phone" value="{{ item.phone }}">
               <button class="primary" type="submit">{% if status == 'accepted' %}Criar e enviar escala agora{% else %}Enviar termo agora{% endif %}</button>

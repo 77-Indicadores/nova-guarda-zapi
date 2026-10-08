@@ -47,6 +47,7 @@ from nova_guarda.onboarding import (
     test_cooperators,
     reject_terms,
     send_terms_to_phone,
+    set_test_cooperator_channel,
 )
 from nova_guarda.config import (
     PORT,
@@ -67,6 +68,7 @@ from nova_guarda.storage import (
     list_appointments,
     list_bookings,
     list_conversation_events,
+    list_conversation_events_for_phone,
     list_cooperators,
     list_poller_runs,
     list_sync_events,
@@ -1009,9 +1011,26 @@ def create_app() -> Flask:
             known.update({item["phone"]: item for item in list_test_candidates()})
         except (RuntimeError, requests.RequestException, ValueError) as exc:
             logger.exception("Erro ao listar cooperados da 77Gestão: %s", exc)
-        selected = [known.get(phone, {"phone": phone, "partner_id": "", "name": ""}) for phone in sorted(phones)]
+        channels = {item["phone"]: item.get("channel", "whatsapp") for item in test_cooperators()}
+        selected = [
+            {**known.get(phone, {"phone": phone, "partner_id": "", "name": ""}), "channel": channels.get(phone, "whatsapp")}
+            for phone in sorted(phones)
+        ]
         set_settings({"test_cooperators": json.dumps(selected, ensure_ascii=False)})
         flash(f"Cooperados de teste salvos: {len(selected)}.")
+        return redirect(url_for("configuracoes"))
+
+    @app.post("/teste-assistido/canal")
+    def teste_assistido_canal():
+        phone = normalize_phone(request.form.get("phone", ""))
+        channel = request.form.get("channel", "")
+        try:
+            set_test_cooperator_channel(phone, channel)
+        except ValueError as exc:
+            flash(str(exc))
+            return redirect(url_for("configuracoes"))
+        destino = "Chat Dev (nada sai pelo WhatsApp)" if channel == "chat" else "WhatsApp real"
+        flash(f"Canal de {phone}: {destino}.")
         return redirect(url_for("configuracoes"))
 
     @app.post("/teste-assistido/escala")
@@ -1197,6 +1216,12 @@ def create_app() -> Flask:
             }
         else:
             zapi_payload["text"] = {"message": message}
+
+        if services.is_simulated_phone(phone):
+            # Cooperado de teste no canal Chat Dev: mesmo caminho do webhook
+            # real e 77Gestão conforme configurado; só o envio não vai ao WhatsApp.
+            process_webhook_payload(zapi_payload)
+            return jsonify({"ok": True, "payload": zapi_payload, "channel": "chat"}), 200
 
         previous_fake_zapi = services.DEV_FAKE_ZAPI
         previous_fake_gestao77 = os.getenv("DEV_FAKE_GESTAO77")
@@ -1395,6 +1420,9 @@ def create_app() -> Flask:
 
     @app.get("/api/events")
     def list_events():
+        phone = normalize_phone(str(request.args.get("phone", "")))
+        if phone:
+            return jsonify({"events": list_conversation_events_for_phone(phone, 200)}), 200
         return jsonify({"events": list_conversation_events(120)}), 200
 
     @app.get("/api/agenda-status")

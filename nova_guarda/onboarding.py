@@ -65,6 +65,18 @@ def add_test_cooperator(phone: str, name: str = "", partner_id: str = "") -> Non
     set_settings({"test_cooperators": json.dumps(items, ensure_ascii=False)})
 
 
+def set_test_cooperator_channel(phone: str, channel: str) -> None:
+    """Canal do cooperado de teste: "whatsapp" (real) ou "chat" (Chat Dev)."""
+    if channel not in {"whatsapp", "chat"}:
+        raise ValueError("Canal inválido.")
+    phone = normalize_phone(phone)
+    items = test_cooperators()
+    for item in items:
+        if item["phone"] == phone:
+            item["channel"] = channel
+    set_settings({"test_cooperators": json.dumps(items, ensure_ascii=False)})
+
+
 def mode_allows_phone(phone: str) -> bool:
     """Trava do modo teste: com ele ligado, a automação só fala com os
     cooperados de teste. Em produção não restringe nada."""

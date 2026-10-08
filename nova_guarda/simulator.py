@@ -932,10 +932,10 @@ DEV_CHAT_HTML = """
     }
 
     async function loadEvents() {
-      const res = await fetch("/api/events");
+      const currentPhone = phone.value.replace(/\\D/g, "");
+      const res = await fetch("/api/events" + (currentPhone ? "?phone=" + currentPhone : ""));
       const data = await res.json();
       const events = (data.events || []).slice().reverse();
-      const currentPhone = phone.value.replace(/\\D/g, "");
       const filtered = events.filter((event) => {
         const payload = event.payload || {};
         return !payload.phone || !currentPhone || String(payload.phone).replace(/\\D/g, "") === currentPhone;
@@ -1021,6 +1021,15 @@ DEV_CHAT_HTML = """
         address: "Localização fake do dev"
       });
     });
+
+    // Aberto a partir de Configurações: já entra na conversa do cooperado de teste.
+    const query = new URLSearchParams(window.location.search);
+    if (query.get("phone")) phone.value = query.get("phone");
+    if (query.get("name")) {
+      nameInput.value = query.get("name");
+      chatName.textContent = query.get("name");
+    }
+    phone.addEventListener("change", loadEvents);
 
     loadEvents();
     setInterval(loadEvents, 2500);

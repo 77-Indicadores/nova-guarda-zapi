@@ -153,7 +153,10 @@ class TestModeAllowlistTest(unittest.TestCase):
 
         from nova_guarda.onboarding import mode_allows_phone, test_cooperators
 
-        self.assertEqual(test_cooperators(), [{"phone": self.real_phone, "partner_id": "7777", "name": "Cooperado Real"}])
+        self.assertEqual(
+            test_cooperators(),
+            [{"phone": self.real_phone, "partner_id": "7777", "name": "Cooperado Real", "channel": "whatsapp"}],
+        )
         self.assertTrue(mode_allows_phone(self.real_phone))
         self.assertFalse(mode_allows_phone(self.test_phone))
         self.assertIn("enviando só para 1 cooperado", self.client.get("/").get_data(as_text=True))
@@ -188,6 +191,102 @@ class TestModeAllowlistTest(unittest.TestCase):
         from nova_guarda.onboarding import mode_allows_phone
 
         self.assertTrue(mode_allows_phone(typed_phone))
+
+
+    # canal Chat Dev: alternativa ao WhatsApp ------------------------------------
+    def use_real_provider_that_must_not_be_called(self):
+        """Liga o provider de verdade com a chamada HTTP armada para falhar o
+        teste: no canal Chat Dev nada pode chegar ao WhatsApp."""
+        import nova_guarda.services as services
+
+        self.whatsapp_calls = []
+
+        def record(_client, payload):
+            self.whatsapp_calls.append(payload)
+            return {"messages": [{"id": "wamid.real"}]}
+
+        self.storage.set_settings({"active_provider": "official"})
+        services.DEV_FAKE_ZAPI = False
+        patcher = patch("nova_guarda.clients.whatsapp_official.WhatsAppOfficialClient._post", record)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(setattr, services, "DEV_FAKE_ZAPI", True)
+
+    def chat_events(self, phone):
+        return self.client.get(f"/api/events?phone={phone}").get_json()["events"]
+
+    def test_chat_channel_runs_the_flow_without_touching_whatsapp(self):
+        from nova_guarda.onboarding import set_test_cooperator_channel
+
+        phone = "5513977776666"
+        self.enable_test_mode([phone])
+        set_test_cooperator_channel(phone, "chat")
+        self.use_real_provider_that_must_not_be_called()
+
+        self.client.post("/dev/simulate-whatsapp", json={"phone": phone, "message": "ativar"})
+        self.assertEqual(self.storage.get_cooperator(phone)["onboarding_status"], "terms_sent")
+        self.client.post("/dev/simulate-whatsapp", json={"phone": phone, "message": "terms_accept"})
+        self.assertEqual(self.storage.get_cooperator(phone)["onboarding_status"], "accepted")
+        self.client.post("/teste-assistido/escala", data={"phone": phone})
+
+        self.assertEqual(self.whatsapp_calls, [])
+        booking = self.storage.list_bookings()[0]
+        self.assertEqual(booking["local_status"], "sent")
+
+        events = self.chat_events(phone)
+        self.assertTrue(all(event["payload"].get("phone") == phone for event in events))
+        buttons = [
+            button["id"]
+            for event in events
+            for button in (event["payload"].get("buttons") or [])
+        ]
+        self.assertIn("terms_accept", buttons)
+        self.assertIn(f"booking_confirm:{booking['booking_id']}", buttons)
+
+        self.client.post(
+            "/dev/simulate-whatsapp", json={"phone": phone, "message": f"booking_confirm:{booking['booking_id']}"}
+        )
+        self.assertEqual(self.storage.get_booking(booking["booking_id"])["local_status"], "confirmed")
+        self.assertEqual(self.whatsapp_calls, [])
+
+    def test_whatsapp_channel_still_uses_the_real_provider(self):
+        from nova_guarda.onboarding import send_terms_to_phone
+
+        phone = "5513977776666"
+        self.enable_test_mode([phone])
+        self.use_real_provider_that_must_not_be_called()
+
+        with patch.dict(os.environ, {"TERMS_DOCUMENT_URL": "https://example.test/termo.pdf"}):
+            send_terms_to_phone(phone, {"id": 1, "name": "Novo", "active": 1})
+
+        self.assertTrue(self.whatsapp_calls)
+
+    def test_chat_channel_is_ignored_outside_test_mode(self):
+        import nova_guarda.services as services
+        from nova_guarda.onboarding import set_test_cooperator_channel
+
+        phone = "5513977776666"
+        self.enable_test_mode([phone])
+        set_test_cooperator_channel(phone, "chat")
+        self.assertTrue(services.is_simulated_phone(phone))
+
+        self.storage.set_settings({"operation_mode": "production"})
+
+        self.assertFalse(services.is_simulated_phone(phone))
+
+    def test_saving_the_test_list_keeps_the_chosen_channel(self):
+        self.storage.set_settings({"operation_mode": "test"})
+        self.client.post("/teste-assistido/cooperados", data={"phones": [self.real_phone]})
+        self.client.post("/teste-assistido/canal", data={"phone": self.real_phone, "channel": "chat"})
+
+        self.client.post("/teste-assistido/cooperados", data={"phones": [self.real_phone, self.test_phone]})
+
+        from nova_guarda.onboarding import test_cooperators
+
+        channels = {item["phone"]: item.get("channel") for item in test_cooperators()}
+        self.assertEqual(channels, {self.real_phone: "chat", self.test_phone: "whatsapp"})
+        html = self.client.get("/configuracoes").get_data(as_text=True)
+        self.assertIn("Abrir Chat Dev", html)
 
 
 if __name__ == "__main__":

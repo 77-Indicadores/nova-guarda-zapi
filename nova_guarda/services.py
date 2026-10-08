@@ -53,6 +53,28 @@ OFFICIAL_PROVIDERS = {"official", "whatsapp_official", "meta", "cloud"}
 WHATSAPP_WINDOW_HOURS = 24
 
 
+def is_simulated_phone(phone: str) -> bool:
+    """Cooperado de teste com canal "Chat Dev": em modo teste, nada do que o
+    bot envia para ele passa pelo WhatsApp. A mensagem é só registrada na
+    conversa e aparece no Chat Dev, que funciona como alternativa ao WhatsApp
+    (o resto do fluxo, inclusive a 77Gestão, segue igual)."""
+    import json
+
+    from nova_guarda.storage import get_setting
+
+    try:
+        if get_setting("operation_mode").strip().lower() != "test":
+            return False
+        items = json.loads(get_setting("test_cooperators") or "[]")
+    except Exception:
+        return False
+    digits = "".join(char for char in str(phone) if char.isdigit())
+    return any(
+        isinstance(item, dict) and item.get("channel") == "chat" and str(item.get("phone")) == digits
+        for item in (items if isinstance(items, list) else [])
+    )
+
+
 def meta_templates_enabled() -> bool:
     """Templates só valem no provider oficial e quando ligados em Configurações
     (depois de aprovados na conta da Meta que envia as mensagens)."""
@@ -101,7 +123,7 @@ def schedule_template_parameters(agenda_data: dict[str, str], with_address: bool
 
 
 def terms_template_required(phone: str) -> bool:
-    return meta_templates_enabled() and not whatsapp_window_open(phone)
+    return meta_templates_enabled() and not is_simulated_phone(phone) and not whatsapp_window_open(phone)
 
 
 def send_terms_template(phone: str, name: str) -> dict[str, Any]:
@@ -142,7 +164,7 @@ def update_agenda_state(phone: str, decision: str, text: str) -> dict[str, Any]:
 
 
 def send_zapi_text(phone: str, message: str) -> dict[str, Any]:
-    if DEV_FAKE_ZAPI:
+    if DEV_FAKE_ZAPI or is_simulated_phone(phone):
         return fake_zapi_response("send-text", phone, {"message": message})
 
     payload = whatsapp_client().send_text(phone, message)
@@ -151,7 +173,7 @@ def send_zapi_text(phone: str, message: str) -> dict[str, Any]:
 
 
 def send_zapi_document(phone: str, document_path: Path, caption: str) -> dict[str, Any]:
-    if DEV_FAKE_ZAPI:
+    if DEV_FAKE_ZAPI or is_simulated_phone(phone):
         return fake_zapi_response(
             "send-document/pdf",
             phone,
@@ -179,7 +201,7 @@ def send_zapi_agenda_buttons(
         {"id": f"booking_confirm{suffix}", "label": "Confirmar"},
         {"id": f"booking_decline{suffix}", "label": "Recusar"},
     ]
-    if DEV_FAKE_ZAPI:
+    if DEV_FAKE_ZAPI or is_simulated_phone(phone):
         return fake_zapi_response("send-button-list", phone, {"message": message, "buttons": buttons})
 
     if agenda_data is not None and meta_templates_enabled():
@@ -205,7 +227,7 @@ def send_zapi_terms_buttons(phone: str) -> dict[str, Any]:
         {"id": "terms_accept", "label": "Li e aceito"},
         {"id": "terms_reject", "label": "Não aceito"},
     ]
-    if DEV_FAKE_ZAPI:
+    if DEV_FAKE_ZAPI or is_simulated_phone(phone):
         return fake_zapi_response("send-button-list", phone, {"message": message, "buttons": buttons})
 
     payload = whatsapp_client().send_button_list(
@@ -244,7 +266,7 @@ def send_zapi_checkin_options(
             "description": "Informar motivo para a Nova Guarda",
         },
     ]
-    if DEV_FAKE_ZAPI:
+    if DEV_FAKE_ZAPI or is_simulated_phone(phone):
         return fake_zapi_response("send-option-list", phone, {"message": message, "options": options})
 
     if agenda_data is not None and meta_templates_enabled():
@@ -267,7 +289,7 @@ def send_zapi_checkin_options(
 
 
 def send_zapi_location_request(phone: str, message: str) -> dict[str, Any]:
-    if DEV_FAKE_ZAPI:
+    if DEV_FAKE_ZAPI or is_simulated_phone(phone):
         return fake_zapi_response("send-text", phone, {"message": message})
 
     client = whatsapp_client()
@@ -288,7 +310,7 @@ def send_zapi_checkout_button(
     agenda_data: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     buttons = [{"id": f"checkout_confirm:{appointment_id}", "label": "Finalizar"}]
-    if DEV_FAKE_ZAPI:
+    if DEV_FAKE_ZAPI or is_simulated_phone(phone):
         return fake_zapi_response("send-button-list", phone, {"message": message, "buttons": buttons})
 
     if agenda_data is not None and meta_templates_enabled():
@@ -310,7 +332,7 @@ def send_zapi_late_buttons(phone: str, appointment_id: str = "") -> dict[str, An
         {"id": f"late_30:{appointment_id}" if appointment_id else "late_30", "label": "30 minutos"},
         {"id": f"late_60:{appointment_id}" if appointment_id else "late_60", "label": "1 hora"},
     ]
-    if DEV_FAKE_ZAPI:
+    if DEV_FAKE_ZAPI or is_simulated_phone(phone):
         return fake_zapi_response("send-button-list", phone, {"message": "Qual é sua previsão de atraso?", "buttons": buttons})
 
     payload = whatsapp_client().send_button_list(
@@ -345,7 +367,7 @@ def send_zapi_no_show_reasons(phone: str, appointment_id: str = "") -> dict[str,
             "description": "Motivo não listado",
         },
     ]
-    if DEV_FAKE_ZAPI:
+    if DEV_FAKE_ZAPI or is_simulated_phone(phone):
         return fake_zapi_response("send-option-list", phone, {"message": "Informe o motivo do não comparecimento:", "options": options})
 
     payload = whatsapp_client().send_option_list(

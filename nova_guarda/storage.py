@@ -1362,3 +1362,13 @@ def purge_bookings_without_gestao77_id() -> int:
                 conn.execute("DELETE FROM bookings WHERE booking_id = ?", (row["booking_id"],))
                 removed += 1
     return removed
+
+
+def list_conversation_events_for_phone(phone: str, limit: int = 200) -> list[dict[str, Any]]:
+    init_db()
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM conversation_events WHERE phone = ? ORDER BY id DESC LIMIT ?",
+            (phone, limit),
+        ).fetchall()
+    return [row_to_conversation_event(row) for row in rows]
