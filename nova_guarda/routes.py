@@ -30,6 +30,7 @@ import nova_guarda.services as services
 from nova_guarda.alerts import handle_delivery_failure, raise_alert
 from nova_guarda.automation import run_automation_once
 from nova_guarda.gestao77_service import (
+    appointment_id_from_checkin_status,
     fetch_schedule_pdf,
     list_pending_partner_bookings,
     record_local_late,
@@ -76,6 +77,7 @@ from nova_guarda.storage import (
     all_settings,
     claim_webhook_event,
     dashboard_metrics,
+    get_appointment,
     get_booking,
     get_appointment_awaiting_location,
     get_cooperator,
@@ -90,6 +92,7 @@ from nova_guarda.storage import (
     list_sync_events,
     release_webhook_event,
     resolve_alert,
+    resolve_open_alerts,
     save_conversation_event,
     set_settings,
     upsert_booking,
@@ -216,6 +219,58 @@ def process_webhook_payload(payload: dict) -> None:
         raise
 
 
+TEAM_HELP = "Fale com a equipe da Nova Guarda."
+
+
+def send_refusal(phone: str, reply: str) -> None:
+    try:
+        response_payload = send_zapi_text(phone, reply)
+    except (RuntimeError, requests.RequestException, ValueError):
+        return
+    append_conversation_event(
+        {
+            "received_at": br_timestamp(),
+            "payload": {
+                "type": "AutoReply",
+                "phone": phone,
+                "status": "refused",
+                "text": {"message": reply},
+                "response": response_payload,
+            },
+        }
+    )
+
+
+def presence_refusal_reply(phone: str, decision: str, checkout: bool) -> str:
+    """Explica por que o toque não pôde ser aceito, em vez de um erro genérico:
+    o cooperado costuma tocar em botões de mensagens antigas ou fora de ordem."""
+    appointment = get_appointment(appointment_id_from_checkin_status(decision) or "")
+    status = (appointment or {}).get("local_status")
+    if not appointment or normalize_phone(appointment.get("phone", "")) != phone:
+        return f"Não encontrei este atendimento para o seu número. {TEAM_HELP}"
+    if status == "checked_out":
+        return "Este atendimento já foi finalizado: check-in e check-out estão registrados."
+    if status == "no_show_reported":
+        return f"Você informou que não iria a este atendimento. Se a situação mudou, {TEAM_HELP[0].lower()}{TEAM_HELP[1:]}"
+    if checkout:
+        return "Você ainda não fez o check-in deste atendimento. Toque em “Sim, cheguei” e envie sua localização primeiro."
+    if status in {"checked_in", "checkout_pending", "checkout_location_pending"}:
+        return "Seu check-in deste atendimento já está registrado."
+    return f"Não consegui registrar sua presença agora. {TEAM_HELP}"
+
+
+def booking_refusal_reply(phone: str, text: str) -> str:
+    booking = get_booking(booking_id_from_reply(text) or "")
+    if booking_id_from_reply(text) and (not booking or normalize_phone(booking.get("phone", "")) != phone):
+        return f"Não encontrei esta escala para o seu número. {TEAM_HELP}"
+    status = (booking or {}).get("local_status")
+    if status == "confirmed":
+        return f"Esta escala já está confirmada. Para mudar sua resposta, {TEAM_HELP[0].lower()}{TEAM_HELP[1:]}"
+    if status == "declined":
+        return f"Esta escala já foi recusada. Para mudar sua resposta, {TEAM_HELP[0].lower()}{TEAM_HELP[1:]}"
+    return f"Não consegui registrar sua resposta da escala agora. {TEAM_HELP}"
+
+
 def request_presence_location(phone: str, decision: str, checkout: bool) -> None:
     try:
         if checkout:
@@ -229,7 +284,7 @@ def request_presence_location(phone: str, decision: str, checkout: bool) -> None
     except (PermissionError, KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
         logger.exception("Erro ao solicitar localização de presença: %s", exc)
         local_result = None
-        reply = "Não consegui registrar sua presença agora. Fale com a equipe da Nova Guarda."
+        reply = presence_refusal_reply(phone, decision, checkout)
         reply_status = "presence_sync_error"
         try:
             response_payload = send_zapi_text(phone, reply)
@@ -452,7 +507,7 @@ def handle_webhook_payload(payload: dict) -> None:
                 sync_result = sync_booking_reply_for_phone(phone, decision, booking_id_from_reply(text))
             except (PermissionError, KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
                 logger.exception("Erro ao sincronizar resposta da escala no 77Gestão: %s", exc)
-                reply = "Não consegui registrar sua resposta da escala agora. Fale com a equipe da Nova Guarda."
+                reply = booking_refusal_reply(phone, text)
                 try:
                     response_payload = send_zapi_text(phone, reply)
                     append_conversation_event(
@@ -539,6 +594,8 @@ def handle_webhook_payload(payload: dict) -> None:
                 try:
                     local_result = record_local_late(phone, checkin_decision)
                     if not local_result["idempotent"]:
+                        # Nova previsão substitui o alerta anterior de atraso.
+                        resolve_open_alerts("late", "appointment", local_result["appointment_id"])
                         raise_alert(
                             "late",
                             "appointment",
@@ -567,11 +624,10 @@ def handle_webhook_payload(payload: dict) -> None:
                     )
                 except (PermissionError, KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
                     logger.exception("Erro ao registrar atraso local: %s", exc)
-                    reply = "Não consegui registrar seu atraso agora. Fale com a equipe da Nova Guarda."
-                    try:
-                        send_zapi_text(phone, reply)
-                    except (RuntimeError, requests.RequestException, ValueError):
-                        pass
+                    reply = presence_refusal_reply(phone, checkin_decision, checkout=False)
+                    if reply.startswith("Seu check-in"):
+                        reply = "Seu check-in deste atendimento já está registrado; não é preciso informar atraso."
+                    send_refusal(phone, reply)
                 return
             if checkin_decision.startswith(("reason_personal:", "reason_access:", "reason_client_cancelled:", "reason_other:")):
                 try:
@@ -605,11 +661,10 @@ def handle_webhook_payload(payload: dict) -> None:
                     )
                 except (PermissionError, KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
                     logger.exception("Erro ao registrar não comparecimento local: %s", exc)
-                    reply = "Não consegui registrar o não comparecimento agora. Fale com a equipe da Nova Guarda."
-                    try:
-                        send_zapi_text(phone, reply)
-                    except (RuntimeError, requests.RequestException, ValueError):
-                        pass
+                    reply = presence_refusal_reply(phone, checkin_decision, checkout=False)
+                    if reply.startswith("Seu check-in"):
+                        reply = f"Seu check-in deste atendimento já está registrado. Se você não vai continuar, {TEAM_HELP[0].lower()}{TEAM_HELP[1:]}"
+                    send_refusal(phone, reply)
                 return
 
             is_arrival = checkin_decision in {"arrived", "arrived_link"} or checkin_decision.startswith(

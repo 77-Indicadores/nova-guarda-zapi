@@ -1439,3 +1439,16 @@ def list_blocked_syncs(entity_type: str, updated_before: str) -> list[dict[str, 
             (updated_before,),
         ).fetchall()
     return [(row_to_booking if entity_type == "booking" else row_to_appointment)(row) for row in rows]
+
+
+def resolve_open_alerts(kind: str, entity_type: str, entity_id: str | int) -> None:
+    """Fecha o alerta aberto desse tipo para a entidade (usado antes de abrir
+    um novo com informação atualizada, ex.: nova previsão de atraso)."""
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE alerts SET resolved_at = ?
+            WHERE kind = ? AND entity_type = ? AND entity_id = ? AND resolved_at IS NULL
+            """,
+            (timestamp(), kind, entity_type, str(entity_id)),
+        )

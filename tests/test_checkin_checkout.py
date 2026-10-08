@@ -240,6 +240,53 @@ class CheckinCheckoutFlowTest(unittest.TestCase):
         self.assertTrue(response.get_json()["result"]["idempotent"])
         self.assertEqual(self.storage.get_appointment(self.appointment_id)["local_status"], "location_pending")
 
+    def last_bot_text(self):
+        for event in self.storage.list_conversation_events(20):
+            if event["payload"].get("type") == "AutoReply":
+                return event["payload"]["text"]["message"]
+        return ""
+
+    def test_out_of_order_taps_get_a_specific_explanation(self):
+        self.accept_cooperator()
+        self.create_booking()
+        self.post_checkin_send()
+
+        self.send_reply(f"checkout_confirm:{self.appointment_id}")
+        self.assertIn("ainda não fez o check-in", self.last_bot_text())
+
+        self.send_reply(f"checkin_arrived:{self.appointment_id}")
+        self.send_location()
+        self.send_reply(f"checkin_arrived:{self.appointment_id}")
+        self.assertIn("check-in deste atendimento já está registrado", self.last_bot_text())
+        self.send_reply(f"late_15:{self.appointment_id}")
+        self.assertIn("não é preciso informar atraso", self.last_bot_text())
+
+        self.send_reply("checkin_arrived:outro-atendimento")
+        self.assertIn("Não encontrei este atendimento", self.last_bot_text())
+
+    def test_arrival_after_no_show_is_explained(self):
+        self.accept_cooperator()
+        self.create_booking()
+        self.post_checkin_send()
+        self.send_reply(f"reason_personal:{self.appointment_id}")
+
+        self.send_reply(f"checkin_arrived:{self.appointment_id}")
+
+        self.assertIn("informou que não iria", self.last_bot_text())
+        self.assertEqual(self.storage.get_appointment(self.appointment_id)["local_status"], "no_show_reported")
+
+    def test_changing_the_delay_replaces_the_late_alert(self):
+        self.accept_cooperator()
+        self.create_booking()
+        self.post_checkin_send()
+
+        self.send_reply(f"late_60:{self.appointment_id}")
+        self.send_reply(f"late_15:{self.appointment_id}")
+
+        alerts = self.storage.list_alerts()
+        self.assertEqual(len(alerts), 1)
+        self.assertIn("15 min", alerts[0]["message"])
+
     def test_checkout_without_checkin_is_blocked(self):
         self.accept_cooperator()
         self.create_booking()
