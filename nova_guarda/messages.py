@@ -101,8 +101,9 @@ def build_terms_buttons_message() -> str:
 def build_confirmation_reply(status: str, agenda: dict[str, Any] | None = None) -> str:
     agenda = agenda or {}
     client = agenda.get("client_name") or "sua agenda"
-    date = agenda.get("schedule_date") or "a data combinada"
-    time = agenda.get("schedule_time") or "o horário combinado"
+    date, time = format_schedule(agenda)
+    date = date or "a data combinada"
+    time = time or "o horário combinado"
 
     if status == "confirmed":
         return f"Escala confirmada, {client}. Data: {date}. Horário: {time}."

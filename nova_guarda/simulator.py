@@ -943,7 +943,7 @@ DEV_CHAT_HTML = """
 
       timeline.innerHTML = '<div class="day">Hoje</div>' + filtered.map((event) => {
         const payload = event.payload || {};
-        const text = payload.location
+        const text = payload.location && payload.type === "ReceivedCallback"
           ? `Localização compartilhada\\n${payload.location.address || ""}\\n${payload.location.latitude || ""}, ${payload.location.longitude || ""}`
           : payloadText(payload) || (payload.type ? `Evento: ${payload.type}` : JSON.stringify(payload, null, 2));
         const kind = payload.type === "LocationLinkCallback" ? "system" : isMine(payload) ? "outgoing" : payload.type === "ReceivedCallback" ? "incoming" : "system";
