@@ -17,6 +17,7 @@ from nova_guarda.messages import (
     build_checkout_message,
     build_schedule_message,
     normalize_phone,
+    schedule_details,
     schedule_period_label,
 )
 from nova_guarda.services import append_fake_sent_message, send_zapi_agenda_buttons, send_zapi_checkin_options
@@ -489,7 +490,7 @@ def send_followup_reminder(entity_type: str, entity: dict[str, Any]) -> dict[str
     appointment_id = str(entity.get("appointment_id"))
     agenda_data = agenda_data_for_appointment(entity)
     if status in {"checkin_pending", "late_reported"}:
-        message = "Lembrete: você já chegou ao local do atendimento? Responda abaixo."
+        message = f"Lembrete: você já chegou ao local do atendimento?\n\n{schedule_details(agenda_data)}\n\nResponda abaixo."
         response = send_zapi_checkin_options(
             phone, message, use_location_link=True, appointment_id=appointment_id, agenda_data=agenda_data
         )
@@ -500,7 +501,7 @@ def send_followup_reminder(entity_type: str, entity: dict[str, Any]) -> dict[str
         response = send_zapi_location_request(phone, message)
         append_fake_sent_message(phone, "checkin2", message, response)
     elif status == "checkout_pending":
-        message = "Lembrete: você já finalizou este atendimento?"
+        message = f"Lembrete: você já finalizou este atendimento?\n\n{schedule_details(agenda_data)}"
         response = send_zapi_checkout_button(phone, message, appointment_id, agenda_data)
         append_fake_sent_message(phone, "checkout", message, response)
     else:

@@ -154,6 +154,10 @@ class MetaTemplatesTest(unittest.TestCase):
         self.create_booking()
         send_booking_to_partner("880", self.phone)
         self.sent.clear()
+        # Reinício do app entre o envio e a resposta: o estado em memória some.
+        from nova_guarda.state import AGENDA_STATE
+
+        AGENDA_STATE.clear()
 
         self.client.post(
             "/webhook",

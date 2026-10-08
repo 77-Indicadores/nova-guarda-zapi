@@ -79,7 +79,7 @@ def schedule_period_label(month: int, year: int) -> str:
 
 def build_schedule_message(data: dict[str, Any], has_pdf: bool = True) -> str:
     """Mensagem da escala de trabalho do período (vários dias), não de um
-    atendimento só. Os dias, horários e locais vão no PDF da 77Gestão."""
+    atendimento só. Os dias, horários e clientes vão no PDF gerado pelo app."""
     name = data.get("client_name") or "cooperado(a)"
     period = data.get("schedule_period") or "período"
     days = int(data.get("schedule_days") or 0)
@@ -156,20 +156,15 @@ def build_terms_buttons_message() -> str:
 
 def build_confirmation_reply(status: str, agenda: dict[str, Any] | None = None) -> str:
     agenda = agenda or {}
-    client = agenda.get("client_name") or "sua agenda"
-    date, time = format_schedule(agenda)
-    date = date or "a data combinada"
-    time = time or "o horário combinado"
+    # Nunca preenche lacuna com texto genérico ("a data combinada"): sem os
+    # dados da escala a resposta fica mais curta, mas continua correta.
+    period = f" de {agenda['schedule_period']}" if agenda.get("schedule_period") else ""
+    name = f", {agenda['client_name']}" if agenda.get("client_name") else ""
 
-    if status == "confirmed" and agenda.get("schedule_period"):
-        return (
-            f"Escala de {agenda['schedule_period']} confirmada, {client}. "
-            "Você receberá o check-in em cada dia de trabalho."
-        )
     if status == "confirmed":
-        return f"Escala confirmada, {client}. Data: {date}. Horário: {time}."
+        return f"Escala{period} confirmada{name}. Você receberá o check-in em cada dia de trabalho."
     if status == "cancelled":
-        return "Recusa registrada. A Nova Guarda recebeu sua resposta para esta escala."
+        return f"Recusa da escala{period} registrada pela Nova Guarda."
     if status == "conflict":
         return "Recebemos sua nova resposta. Como ela altera uma escala já recusada, a equipe Nova Guarda fará a revisão manual."
     return "Resposta recebida pela Nova Guarda."

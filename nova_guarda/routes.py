@@ -42,6 +42,7 @@ from nova_guarda.gestao77_service import (
     reset_test_phone,
     run_full_assisted_test,
     run_test_for_existing_cooperator,
+    schedule_data_from_booking,
     send_booking_to_partner,
     send_checkin_to_partner,
     send_checkout_to_partner,
@@ -265,8 +266,9 @@ def reply_unrecognized_message(phone: str) -> None:
         if status == "terms_sent":
             reply = build_terms_buttons_message()
             response_payload = send_zapi_terms_buttons(phone)
-        elif get_appointment_awaiting_location(phone):
-            reply = build_checkin_reply("arrived")
+        elif awaiting := get_appointment_awaiting_location(phone):
+            checkout = awaiting.get("local_status") == "checkout_location_pending"
+            reply = build_checkin_reply("checkout_location" if checkout else "arrived")
             response_payload = send_zapi_location_request(phone, reply)
         else:
             reply = (
@@ -411,7 +413,7 @@ def handle_webhook_payload(payload: dict) -> None:
                 reply = "Não consegui registrar sua presença agora. Fale com a equipe da Nova Guarda."
             elif sync_result is None:
                 reply_status = "location_ignored"
-                reply = "Recebemos sua localização, mas não há check-in aguardando localização neste momento."
+                reply = "Recebemos sua localização, mas não há check-in nem check-out aguardando localização neste momento."
             else:
                 reply_status = str(sync_result.get("status") or "checked_in")
                 step = "Check-out" if reply_status == "checked_out" else "Check-in"
@@ -471,7 +473,11 @@ def handle_webhook_payload(payload: dict) -> None:
 
             next_status = "confirmed" if decision == "confirmed" else "cancelled"
             state = update_agenda_state(phone, next_status, text)
-            reply = build_confirmation_reply(state["status"], state.get("agenda"))
+            # Os dados da escala vêm do banco: o estado em memória se perde a
+            # cada reinício do app e a resposta sairia genérica.
+            confirmed_booking = get_booking((sync_result or {}).get("booking_id") or "")
+            agenda = schedule_data_from_booking(confirmed_booking) if confirmed_booking else state.get("agenda")
+            reply = build_confirmation_reply(state["status"], agenda)
 
             try:
                 response_payload = send_zapi_text(phone, reply)
@@ -541,7 +547,10 @@ def handle_webhook_payload(payload: dict) -> None:
                             f"{phone} avisou atraso de {local_result['late_minutes']} min no atendimento {local_result['appointment_id']}.",
                             "late_reported",
                         )
-                    reply = f"Atraso de {local_result['late_minutes']} minutos registrado pela Nova Guarda."
+                    reply = (
+                        f"Atraso de {local_result['late_minutes']} minutos registrado e a equipe da Nova Guarda foi avisada. "
+                        "Quando chegar, toque em “Sim, cheguei” na mensagem de check-in."
+                    )
                     response_payload = send_zapi_text(phone, reply)
                     append_conversation_event(
                         {
@@ -576,7 +585,10 @@ def handle_webhook_payload(payload: dict) -> None:
                             phone,
                             f"{phone} NÃO VAI ao atendimento {local_result['appointment_id']}: {local_result['reason']}.",
                         )
-                    reply = f"Não comparecimento registrado com motivo: {local_result['reason']}."
+                    reply = (
+                        f"Não comparecimento registrado com motivo: {local_result['reason']}. "
+                        "A equipe da Nova Guarda foi avisada."
+                    )
                     response_payload = send_zapi_text(phone, reply)
                     append_conversation_event(
                         {
