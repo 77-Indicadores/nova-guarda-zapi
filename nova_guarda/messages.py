@@ -37,7 +37,34 @@ def format_schedule(data: dict[str, str]) -> tuple[str, str]:
         return date_text, time_text
     if parsed.tzinfo is not None:
         parsed = parsed.astimezone(BR_TZ)
-    return parsed.strftime("%d/%m/%Y"), time_text or parsed.strftime("%H:%M")
+    if not time_text:
+        time_text = parsed.strftime("%H:%M")
+        # Com o fim do atendimento, o horário vai como início e fim.
+        try:
+            ends_at = datetime.fromisoformat(str(data.get("schedule_end") or "").replace("Z", "+00:00"))
+            if ends_at.tzinfo is not None:
+                ends_at = ends_at.astimezone(BR_TZ)
+            time_text = f"{time_text} às {ends_at:%H:%M}"
+        except ValueError:
+            pass
+    return parsed.strftime("%d/%m/%Y"), time_text
+
+
+def schedule_details(data: dict[str, str]) -> str:
+    """Linhas de data, horário e cliente de um atendimento. O endereço só
+    aparece quando existe (a 77Gestão não envia endereço no atendimento)."""
+    date, time = format_schedule(data)
+    lines = []
+    if data.get("client_address"):
+        lines.append(f"Endereço: {data['client_address']}")
+    lines.append(f"Data: {date or 'Data não informada'}")
+    lines.append(f"Horário: {time or 'Horário não informado'}")
+    lines.append(f"Atendimento: {data.get('service') or 'Atendimento Nova Guarda'}")
+    return "\n".join(lines)
+
+
+def build_checkout_message(data: dict[str, str]) -> str:
+    return f"Você já finalizou este atendimento?\n\n{schedule_details(data)}"
 
 
 MONTH_NAMES = [
@@ -99,19 +126,10 @@ def build_agenda_message(data: dict[str, str]) -> str:
 
 def build_checkin_message(data: dict[str, str]) -> str:
     client = data.get("client_name") or "cooperado(a)"
-    address = data.get("client_address") or "Endereço não informado"
-    date, time = format_schedule(data)
-    date = date or "Data não informada"
-    time = time or "Horário não informado"
-    service = data.get("service") or "Atendimento Nova Guarda"
-
     return (
         f"Olá, {client}. Aqui é a Nova Guarda.\n\n"
         "Está na hora de confirmar sua chegada para o atendimento:\n\n"
-        f"Endereço: {address}\n"
-        f"Data: {date}\n"
-        f"Horário: {time}\n"
-        f"Atendimento: {service}\n\n"
+        f"{schedule_details(data)}\n\n"
         "Selecione a opção que corresponde à sua situação agora."
     )
 

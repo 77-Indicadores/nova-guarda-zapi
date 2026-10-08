@@ -489,6 +489,23 @@ class SelfHealingFlowTest(unittest.TestCase):
         self.assertTrue(response.data.startswith(b"%PDF"))
         self.assertEqual(self.client.get("/escalas/inexistente/pdf").status_code, 404)
 
+    def test_checkin_and_checkout_messages_show_start_and_end_time(self):
+        from nova_guarda.gestao77_service import agenda_data_from_booking
+        from nova_guarda.messages import build_checkin_message, build_checkout_message
+
+        booking = self.schedule_booking()
+        appointment = booking["payload"]["appointments"][0]
+        data = agenda_data_from_booking(booking, appointment)
+
+        checkin = build_checkin_message(data)
+        checkout = build_checkout_message(data)
+
+        for message in (checkin, checkout):
+            self.assertIn("Data: 03/10/2026", message)
+            self.assertIn("Horário: 08:00 às 17:00", message)
+            self.assertIn("Atendimento: Cliente A", message)
+            self.assertNotIn("Endereço", message)
+
     # 6. mês seguinte ------------------------------------------------------------
     def test_cycle_also_imports_next_month_bookings(self):
         from nova_guarda.timezone import br_now

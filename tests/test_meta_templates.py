@@ -66,7 +66,14 @@ class MetaTemplatesTest(unittest.TestCase):
                 "phone": self.phone,
                 "address": "Rua Exemplo, 123",
                 "first_appointment_id": "9001",
-                "appointments": [{"id": "9001", "start_at": "2026-10-08T16:00:00Z", "customer": {"name": "Cliente X"}}],
+                "appointments": [
+                    {
+                        "id": "9001",
+                        "start_at": "2026-10-08T16:00:00Z",
+                        "end_at": "2026-10-08T22:00:00Z",
+                        "customer": {"name": "Cliente X"},
+                    }
+                ],
             }
         )
 
@@ -201,7 +208,8 @@ class MetaTemplatesTest(unittest.TestCase):
         checkout = self.sent[-1]
         self.assertEqual(self.template(checkout)["name"], "nova_guarda_checkout_atendimento_v3")
         self.assertEqual(self.button_payloads(checkout), ["checkout_confirm:9001"])
-        self.assertEqual(self.body_texts(checkout), ["Cooperado Teste", "08/10/2026", "13:00", "Cliente X"])
+        self.assertEqual(self.body_texts(checkout), ["Cooperado Teste", "08/10/2026", "13:00 às 19:00", "Cliente X"])
+        self.assertEqual(self.body_texts(checkin)[3], "13:00 às 19:00")
 
     def test_terms_outside_window_use_only_the_template(self):
         from nova_guarda.onboarding import send_terms_to_phone

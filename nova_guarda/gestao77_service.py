@@ -14,6 +14,7 @@ from nova_guarda.messages import (
     build_agenda_message,
     build_checkin2_message,
     build_checkin_message,
+    build_checkout_message,
     build_schedule_message,
     normalize_phone,
     schedule_period_label,
@@ -550,10 +551,9 @@ def send_checkout_to_partner(appointment_id: int | str, phone: str = "") -> dict
     if appointment.get("local_status") != "checked_in":
         raise ValueError("Check-out só pode ser enviado depois de checked_in.")
 
-    message = "Você já finalizou este atendimento?"
-    response_payload = send_zapi_checkout_button(
-        phone, message, str(appointment_id), agenda_data_for_appointment(appointment)
-    )
+    agenda_data = agenda_data_for_appointment(appointment)
+    message = build_checkout_message(agenda_data)
+    response_payload = send_zapi_checkout_button(phone, message, str(appointment_id), agenda_data)
     append_fake_sent_message(phone, "checkout", message, response_payload)
     stored_appointment = mark_appointment_checkout_sent(appointment_id, whatsapp_provider(), response_payload)
     AGENDA_STATE[phone] = {
@@ -703,6 +703,7 @@ def agenda_data_from_booking(booking: dict[str, Any], appointment: dict[str, Any
         "client_address": str(payload.get("address") or payload.get("client_address") or "").strip(),
         "schedule_date": str(payload.get("date") or payload.get("schedule_date") or appointment.get("start_at") or "").strip(),
         "schedule_time": str(payload.get("time") or payload.get("schedule_time") or "").strip(),
+        "schedule_end": str(appointment.get("end_at") or "").strip(),
         "service": str(payload.get("service") or customer.get("name") or "Escala da cooperativa").strip(),
         "appointment_id": str(appointment.get("id") or payload.get("today_appointment_id") or payload.get("first_appointment_id") or "").strip(),
     }
