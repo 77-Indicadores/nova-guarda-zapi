@@ -273,7 +273,9 @@ def ensure_column(conn: Any, table: str, column: str, definition: str) -> None:
 
 def upsert_booking(member: dict[str, Any], phone: str = "", local_status: str = "pending") -> dict[str, Any]:
     init_db()
-    booking_id = str(member.get("booking_id") or member.get("id") or "").strip()
+    # Nunca usa o id do cooperado como booking_id: cooperado sem escala no mês
+    # vem do resumo da 77Gestão com booking_id nulo e não é uma escala.
+    booking_id = str(member.get("booking_id") or "").strip()
     if not booking_id:
         raise ValueError("Booking sem booking_id.")
 
@@ -1341,3 +1343,22 @@ def mark_sync_blocked(entity_type: str, entity_id: str | int, status: str) -> No
             f"UPDATE {table} SET gestao77_status = ?, updated_at = ? WHERE {key} = ?",
             (f"blocked:{status}", timestamp(), str(entity_id)),
         )
+
+
+def purge_bookings_without_gestao77_id() -> int:
+    """Remove escalas locais criadas a partir de cooperados sem escala na
+    77Gestão (versões antigas usavam o id do cooperado como booking_id). Elas
+    não existem lá e o id pode coincidir com o de uma escala real no futuro."""
+    init_db()
+    removed = 0
+    with connect() as conn:
+        rows = conn.execute("SELECT booking_id, payload_json FROM bookings").fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["payload_json"] or "{}")
+            except ValueError:
+                continue
+            if isinstance(payload, dict) and "booking_id" in payload and not payload.get("booking_id"):
+                conn.execute("DELETE FROM bookings WHERE booking_id = ?", (row["booking_id"],))
+                removed += 1
+    return removed

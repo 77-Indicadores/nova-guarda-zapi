@@ -26,6 +26,7 @@ from nova_guarda.storage import (
     list_bookings_for_checkin,
     mark_entity_alerted,
     mark_entity_reminded,
+    purge_bookings_without_gestao77_id,
     purge_webhook_events,
     save_poller_run,
     set_settings,
@@ -71,6 +72,7 @@ def run_automation_once(month: int | None = None, year: int | None = None, limit
     }
 
     try:
+        payload["purged_fake_bookings"] = purge_bookings_without_gestao77_id()
         bookings = list_pending_partner_bookings(month, year)
         if not explicit_period:
             # Escala do mês seguinte liberada para envio não espera o mês virar.

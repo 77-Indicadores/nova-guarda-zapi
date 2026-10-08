@@ -333,6 +333,29 @@ class SelfHealingFlowTest(unittest.TestCase):
 
         self.assertEqual([member["booking_id"] for member in members], [11])
 
+    def test_fake_bookings_from_members_without_booking_are_purged(self):
+        import json
+
+        self.create_booking("13", status="declined")
+        with self.storage.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO bookings (booking_id, partner_id, partner_name, phone, local_status, payload_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ("602", "602", "Sem escala", self.phone, "declined", json.dumps({"id": 602, "booking_id": None}), "x", "x"),
+            )
+
+        result = self.run_cycle()
+
+        self.assertEqual(result["purged_fake_bookings"], 1)
+        self.assertIsNone(self.storage.get_booking("602"))
+        self.assertIsNotNone(self.storage.get_booking("13"))
+
+    def test_member_without_booking_id_is_never_stored_as_booking(self):
+        with self.assertRaises(ValueError):
+            self.storage.upsert_booking({"id": 602, "name": "Sem escala", "booking_id": None})
+
     def test_rejected_transition_stops_retrying_and_alerts(self):
         import requests
 
