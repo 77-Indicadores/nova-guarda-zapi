@@ -10,8 +10,16 @@ from nova_guarda.clients import Gestao77Client
 from nova_guarda.config import GESTAO77_TEST_CUSTOMER_ID, GESTAO77_TEST_SERVICE_ID
 from nova_guarda.flows import agenda_status_label
 from nova_guarda.flows import checkin_status_label
-from nova_guarda.messages import build_agenda_message, build_checkin2_message, build_checkin_message, normalize_phone
+from nova_guarda.messages import (
+    build_agenda_message,
+    build_checkin2_message,
+    build_checkin_message,
+    build_schedule_message,
+    normalize_phone,
+    schedule_period_label,
+)
 from nova_guarda.services import append_fake_sent_message, send_zapi_agenda_buttons, send_zapi_checkin_options
+from nova_guarda.services import send_zapi_schedule
 from nova_guarda.services import send_zapi_checkout_button, send_zapi_location_request
 from nova_guarda.services import whatsapp_provider
 from nova_guarda.state import AGENDA_STATE
@@ -67,7 +75,10 @@ def list_pending_partner_bookings(month: int, year: int, body: dict[str, Any] | 
         statuses=PENDING_SCHEDULE_STATUSES,
         body=body,
     )
-    return [upsert_booking(enrich_booking(client, booking)) for booking in bookings]
+    return [
+        upsert_booking({**enrich_booking(client, booking), "schedule_month": month, "schedule_year": year})
+        for booking in bookings
+    ]
 
 
 def enrich_booking(client: Gestao77Client, booking: dict[str, Any]) -> dict[str, Any]:
@@ -228,10 +239,8 @@ def send_booking_to_partner(booking_id: int | str, phone: str = "") -> dict[str,
             "gestao77": sync_response,
         }
 
-    agenda_data = agenda_data_from_booking(booking)
-    message = build_agenda_message(agenda_data)
-    response_payload = send_zapi_agenda_buttons(phone, message, str(booking_id), agenda_data)
-    append_fake_sent_message(phone, "agenda", message, response_payload)
+    agenda_data = schedule_data_from_booking(booking)
+    message, response_payload = send_schedule_message(booking, phone, agenda_data)
     sent_booking = mark_booking_whatsapp_sent(booking_id, phone, whatsapp_provider(), response_payload)
 
     AGENDA_STATE[phone] = {
@@ -471,10 +480,9 @@ def send_followup_reminder(entity_type: str, entity: dict[str, Any]) -> dict[str
     if not phone:
         raise ValueError("Sem telefone para enviar lembrete.")
     if entity_type == "booking":
-        agenda_data = agenda_data_from_booking(entity)
-        message = "Lembrete: sua escala ainda aguarda resposta.\n\n" + build_agenda_message(agenda_data)
-        response = send_zapi_agenda_buttons(phone, message, str(entity.get("booking_id")), agenda_data)
-        append_fake_sent_message(phone, "agenda", message, response)
+        _, response = send_schedule_message(
+            entity, phone, schedule_data_from_booking(entity), prefix="Lembrete: sua escala ainda aguarda resposta.\n\n"
+        )
         return response
 
     appointment_id = str(entity.get("appointment_id"))
@@ -698,6 +706,83 @@ def agenda_data_from_booking(booking: dict[str, Any], appointment: dict[str, Any
         "service": str(payload.get("service") or customer.get("name") or "Escala da cooperativa").strip(),
         "appointment_id": str(appointment.get("id") or payload.get("today_appointment_id") or payload.get("first_appointment_id") or "").strip(),
     }
+
+
+def schedule_data_from_booking(booking: dict[str, Any]) -> dict[str, Any]:
+    """Resumo da escala de trabalho do período: a escala é o conjunto de dias
+    do cooperado no mês, não um atendimento só."""
+    data: dict[str, Any] = dict(agenda_data_from_booking(booking))
+    payload = booking.get("payload") or {}
+    appointments = payload.get("appointments") if isinstance(payload.get("appointments"), list) else []
+    shifts: list[tuple[datetime, datetime | None, str]] = []
+    for appointment in appointments:
+        if not isinstance(appointment, dict):
+            continue
+        if str(appointment.get("status") or "").strip().lower() in {"cancelled", "canceled", "cancelado", "cancelada"}:
+            continue
+        starts_at = _parse_br(appointment.get("start_at"))
+        if not starts_at:
+            continue
+        customer = appointment.get("customer") if isinstance(appointment.get("customer"), dict) else {}
+        shifts.append((starts_at, _parse_br(appointment.get("end_at")), str(customer.get("name") or "").strip()))
+    shifts.sort(key=lambda item: item[0])
+
+    reference = shifts[0][0] if shifts else br_now()
+    month = int(payload.get("schedule_month") or reference.month)
+    year = int(payload.get("schedule_year") or reference.year)
+    days = sorted({shift[0].date() for shift in shifts})
+    data.update(
+        {
+            "schedule_month": month,
+            "schedule_year": year,
+            "schedule_period": schedule_period_label(month, year),
+            "schedule_days": len(days),
+            "schedule_first": days[0].strftime("%d/%m") if days else "",
+            "schedule_last": days[-1].strftime("%d/%m") if days else "",
+            "schedule_lines": [
+                f"{start:%d/%m} {start:%H:%M}" + (f"–{end:%H:%M}" if end else "") + (f" · {customer}" if customer else "")
+                for start, end, customer in shifts[:31]
+            ],
+        }
+    )
+    return data
+
+
+def _parse_br(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.astimezone(BR_TZ) if parsed.tzinfo else parsed.replace(tzinfo=BR_TZ)
+
+
+def fetch_schedule_pdf(booking: dict[str, Any], schedule_data: dict[str, Any] | None = None) -> bytes | None:
+    """PDF da escala do cooperado na 77Gestão. Sem PDF só em modo fake (não
+    há 77Gestão); em modo real a falha impede o envio, porque o PDF é o
+    conteúdo da escala."""
+    if fake_gestao77_enabled():
+        return None
+    schedule_data = schedule_data or schedule_data_from_booking(booking)
+    partner_id = str(booking.get("partner_id") or "").strip()
+    if not partner_id:
+        raise RuntimeError("Escala sem partner_id para gerar o PDF na 77Gestão.")
+    return Gestao77Client.from_env().get_cooperative_member_schedule_pdf(
+        partner_id, schedule_data["schedule_month"], schedule_data["schedule_year"]
+    )
+
+
+def send_schedule_message(
+    booking: dict[str, Any],
+    phone: str,
+    schedule_data: dict[str, Any],
+    prefix: str = "",
+) -> tuple[str, dict[str, Any]]:
+    pdf_content = fetch_schedule_pdf(booking, schedule_data)
+    message = prefix + build_schedule_message(schedule_data, has_pdf=bool(pdf_content))
+    file_name = f"Escala Nova Guarda - {schedule_data['schedule_period'].replace('/', ' ')}.pdf"
+    response = send_zapi_schedule(phone, message, str(booking.get("booking_id")), schedule_data, pdf_content, file_name)
+    append_fake_sent_message(phone, "agenda", message, response)
+    return message, response
 
 
 def agenda_data_for_appointment(appointment: dict[str, Any]) -> dict[str, str]:

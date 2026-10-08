@@ -9,7 +9,19 @@ import warnings
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, abort, flash, jsonify, redirect, render_template, render_template_string, request, session, url_for
+from flask import (
+    Flask,
+    Response,
+    abort,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    render_template_string,
+    request,
+    session,
+    url_for,
+)
 from werkzeug.security import check_password_hash
 
 load_dotenv(encoding="utf-8-sig")
@@ -18,6 +30,7 @@ import nova_guarda.services as services
 from nova_guarda.alerts import handle_delivery_failure, raise_alert
 from nova_guarda.automation import run_automation_once
 from nova_guarda.gestao77_service import (
+    fetch_schedule_pdf,
     list_pending_partner_bookings,
     record_local_late,
     record_local_no_show,
@@ -62,6 +75,7 @@ from nova_guarda.storage import (
     all_settings,
     claim_webhook_event,
     dashboard_metrics,
+    get_booking,
     get_appointment_awaiting_location,
     get_cooperator,
     init_db,
@@ -902,6 +916,20 @@ def create_app() -> Flask:
             appointments=list_appointments(),
             status_filter=status,
         )
+
+    @app.get("/escalas/<booking_id>/pdf")
+    def escala_pdf(booking_id: str):
+        booking = get_booking(booking_id)
+        if not booking:
+            abort(404)
+        try:
+            content = fetch_schedule_pdf(booking)
+        except (RuntimeError, requests.RequestException, ValueError) as exc:
+            logger.exception("Erro ao buscar PDF da escala %s: %s", booking_id, exc)
+            return f"Não consegui buscar o PDF da escala na 77Gestão: {exc}", 502
+        if not content:
+            return "PDF indisponível com a 77Gestão em modo fake.", 404
+        return Response(content, mimetype="application/pdf", headers={"Content-Disposition": "inline; filename=escala.pdf"})
 
     @app.post("/sync/retry-ui")
     def retry_ui():

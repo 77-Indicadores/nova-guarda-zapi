@@ -53,7 +53,37 @@ class WhatsAppOfficialClient:
             }
         )
 
-    def send_button_list(self, phone: str, message: str, buttons: list[dict[str, str]]) -> dict[str, Any]:
+    def upload_media(self, content: bytes, file_name: str, mime_type: str = "application/pdf") -> str:
+        """Sobe um arquivo para a Meta e devolve o id de mídia, usado para
+        enviar documento gerado na hora (sem depender de link público)."""
+        if not self.phone_number_id or not self.token:
+            raise RuntimeError("Configure WHATSAPP_OFFICIAL_PHONE_NUMBER_ID e WHATSAPP_OFFICIAL_TOKEN.")
+        response = requests.post(
+            f"{self.base_url}/{self.phone_number_id}/media",
+            headers={"Authorization": f"Bearer {self.token}"},
+            data={"messaging_product": "whatsapp", "type": mime_type},
+            files={"file": (file_name, content, mime_type)},
+            timeout=60,
+        )
+        response.raise_for_status()
+        media_id = str(response.json().get("id") or "")
+        if not media_id:
+            raise RuntimeError("A Meta não devolveu o id da mídia enviada.")
+        return media_id
+
+    def send_button_list(
+        self,
+        phone: str,
+        message: str,
+        buttons: list[dict[str, str]],
+        document_id: str = "",
+        document_name: str = "",
+    ) -> dict[str, Any]:
+        header = (
+            {"header": {"type": "document", "document": {"id": document_id, "filename": document_name}}}
+            if document_id
+            else {}
+        )
         return self._post(
             {
                 "messaging_product": "whatsapp",
@@ -61,6 +91,7 @@ class WhatsAppOfficialClient:
                 "type": "interactive",
                 "interactive": {
                     "type": "button",
+                    **header,
                     "body": {"text": message},
                     "action": {
                         "buttons": [
@@ -85,10 +116,21 @@ class WhatsAppOfficialClient:
         language: str,
         body_parameters: list[str],
         button_payloads: list[str],
+        header_document_id: str = "",
+        header_document_name: str = "",
     ) -> dict[str, Any]:
         """Template aprovado com variáveis no corpo e botões de resposta
         rápida; o payload de cada botão volta no webhook quando ele é tocado."""
         components: list[dict[str, Any]] = []
+        if header_document_id:
+            components.append(
+                {
+                    "type": "header",
+                    "parameters": [
+                        {"type": "document", "document": {"id": header_document_id, "filename": header_document_name}}
+                    ],
+                }
+            )
         if body_parameters:
             components.append(
                 {"type": "body", "parameters": [{"type": "text", "text": text} for text in body_parameters]}

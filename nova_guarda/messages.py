@@ -40,6 +40,46 @@ def format_schedule(data: dict[str, str]) -> tuple[str, str]:
     return parsed.strftime("%d/%m/%Y"), time_text or parsed.strftime("%H:%M")
 
 
+MONTH_NAMES = [
+    "janeiro", "fevereiro", "março", "abril", "maio", "junho",
+    "julho", "agosto", "setembro", "outubro", "novembro", "dezembro",
+]
+
+
+def schedule_period_label(month: int, year: int) -> str:
+    return f"{MONTH_NAMES[(int(month) - 1) % 12]}/{year}"
+
+
+def build_schedule_message(data: dict[str, Any], has_pdf: bool = True) -> str:
+    """Mensagem da escala de trabalho do período (vários dias), não de um
+    atendimento só. Os dias, horários e locais vão no PDF da 77Gestão."""
+    name = data.get("client_name") or "cooperado(a)"
+    period = data.get("schedule_period") or "período"
+    days = int(data.get("schedule_days") or 0)
+    lines = [
+        f"Olá, {name}. Aqui é a Nova Guarda.",
+        "",
+        f"Sua escala de trabalho de {period} está disponível para confirmação.",
+    ]
+    if days:
+        span = (
+            f"em {data.get('schedule_first')}"
+            if data.get("schedule_first") == data.get("schedule_last")
+            else f"de {data.get('schedule_first')} a {data.get('schedule_last')}"
+        )
+        lines += ["", f"Dias de trabalho: {days} ({span})"]
+    if has_pdf:
+        lines += ["", "O PDF desta mensagem traz todos os dias, horários e clientes."]
+    elif data.get("schedule_lines"):
+        lines += [""] + list(data["schedule_lines"])
+    lines += [
+        "",
+        "Confirme abaixo se você poderá cumprir esta escala. "
+        "Depois da confirmação, você receberá o check-in em cada dia de trabalho.",
+    ]
+    return "\n".join(lines)
+
+
 def build_agenda_message(data: dict[str, str]) -> str:
     client = data.get("client_name") or "cooperado(a)"
     address = data.get("client_address") or "Endereço não informado"
@@ -105,6 +145,11 @@ def build_confirmation_reply(status: str, agenda: dict[str, Any] | None = None) 
     date = date or "a data combinada"
     time = time or "o horário combinado"
 
+    if status == "confirmed" and agenda.get("schedule_period"):
+        return (
+            f"Escala de {agenda['schedule_period']} confirmada, {client}. "
+            "Você receberá o check-in em cada dia de trabalho."
+        )
     if status == "confirmed":
         return f"Escala confirmada, {client}. Data: {date}. Horário: {time}."
     if status == "cancelled":

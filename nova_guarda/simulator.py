@@ -952,7 +952,10 @@ DEV_CHAT_HTML = """
         const buttons = actions.length
           ? `<div class="message-actions">${actions.map((action) => `<button type="button" data-reply="${escapeHtml(action.id)}">${escapeHtml(action.label)}</button>`).join("")}</div>`
           : "";
-        return `<article class="bubble ${kind}">${escapeHtml(text)}${buttons}${kind === "system" ? "" : `<span class="time">${escapeHtml(eventTime(event.received_at))}${ticks}</span>`}</article>`;
+        const pdf = payload.document_url
+          ? `<div><a href="${escapeHtml(payload.document_url)}" target="_blank" rel="noopener">📄 Abrir PDF da escala</a></div>`
+          : "";
+        return `<article class="bubble ${kind}">${pdf}${escapeHtml(text)}${buttons}${kind === "system" ? "" : `<span class="time">${escapeHtml(eventTime(event.received_at))}${ticks}</span>`}</article>`;
       }).join("");
       timeline.scrollTop = timeline.scrollHeight;
       timeline.querySelectorAll("[data-reply]").forEach((button) => {

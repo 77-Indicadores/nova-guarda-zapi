@@ -16,7 +16,9 @@ TERMS_DOCUMENT_URL = os.getenv("TERMS_DOCUMENT_URL", "").strip()
 # Templates aprovados na Meta, usados para iniciar conversa fora da janela de 24h.
 WHATSAPP_TEMPLATE_LANGUAGE = os.getenv("WHATSAPP_TEMPLATE_LANGUAGE", "pt_BR").strip()
 WHATSAPP_TEMPLATE_TERMS = os.getenv("WHATSAPP_TEMPLATE_TERMS", "nova_guarda_ativacao_termo").strip()
-WHATSAPP_TEMPLATE_BOOKING = os.getenv("WHATSAPP_TEMPLATE_BOOKING", "nova_guarda_escala_confirmacao_v2").strip()
+# Template da escala do período: cabeçalho DOCUMENTO (PDF da escala), corpo com
+# {{1}} nome, {{2}} período, {{3}} dias de trabalho, e botões Confirmar / Recusar.
+WHATSAPP_TEMPLATE_BOOKING = os.getenv("WHATSAPP_TEMPLATE_BOOKING", "nova_guarda_escala_periodo_v1").strip()
 WHATSAPP_TEMPLATE_CHECKIN = os.getenv("WHATSAPP_TEMPLATE_CHECKIN", "nova_guarda_checkin_atendimento_v2").strip()
 WHATSAPP_TEMPLATE_CHECKOUT = os.getenv("WHATSAPP_TEMPLATE_CHECKOUT", "nova_guarda_checkout_atendimento_v3").strip()
 DEFAULT_PUBLIC_BASE_URL = "https://testezapi.77indicadores.com.br/webhook"

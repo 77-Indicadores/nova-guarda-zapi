@@ -150,7 +150,7 @@ class BookingFlowTest(unittest.TestCase):
         self.accept_cooperator()
         self.create_booking()
 
-        with patch("nova_guarda.gestao77_service.send_zapi_agenda_buttons", side_effect=RuntimeError("provider fora")):
+        with patch("nova_guarda.gestao77_service.send_zapi_schedule", side_effect=RuntimeError("provider fora")):
             response = self.post_booking_send()
 
         self.assertEqual(response.status_code, 502)

@@ -84,24 +84,61 @@ class MetaTemplatesTest(unittest.TestCase):
         body = [c for c in self.template(payload)["components"] if c["type"] == "body"][0]
         return [parameter["text"] for parameter in body["parameters"]]
 
-    def test_booking_goes_out_as_template_with_booking_id_in_buttons(self):
+    def send_booking_with_pdf(self):
+        """Envia a escala com a 77Gestão devolvendo o PDF e a Meta aceitando o upload."""
+        from nova_guarda.gestao77_service import send_booking_to_partner
+
+        with patch("nova_guarda.gestao77_service.fetch_schedule_pdf", return_value=b"%PDF-1.4 escala"), patch(
+            "nova_guarda.clients.whatsapp_official.WhatsAppOfficialClient.upload_media", return_value="media-1"
+        ) as upload:
+            send_booking_to_partner("880", self.phone)
+        return upload
+
+    def test_booking_goes_out_as_period_template_with_pdf_and_booking_id(self):
+        self.accept_cooperator()
+        self.create_booking()
+
+        upload = self.send_booking_with_pdf()
+
+        upload.assert_called_once()
+        self.assertEqual(upload.call_args.args[0], b"%PDF-1.4 escala")
+        message = self.sent[0]
+        self.assertEqual(message["type"], "template")
+        self.assertEqual(self.template(message)["name"], "nova_guarda_escala_periodo_v1")
+        self.assertEqual(self.template(message)["language"], {"code": "pt_BR"})
+        header = [c for c in self.template(message)["components"] if c["type"] == "header"][0]
+        self.assertEqual(header["parameters"][0]["document"]["id"], "media-1")
+        self.assertTrue(header["parameters"][0]["document"]["filename"].endswith(".pdf"))
+        self.assertEqual(self.button_payloads(message), ["booking_confirm:880", "booking_decline:880"])
+        self.assertEqual(self.body_texts(message), ["Cooperado Teste", "outubro/2026", "1 dia(s), de 08/10 a 08/10"])
+        self.assertEqual(self.storage.get_booking("880")["whatsapp_message_id"], "wamid.1")
+
+    def test_booking_inside_window_is_one_message_with_pdf_header_and_buttons(self):
+        self.storage.set_settings({"meta_templates_enabled": "0"})
+        self.accept_cooperator()
+        self.create_booking()
+
+        self.send_booking_with_pdf()
+
+        message = self.sent[0]
+        self.assertEqual(message["type"], "interactive")
+        self.assertEqual(message["interactive"]["header"]["document"]["id"], "media-1")
+        self.assertIn("escala de trabalho de outubro/2026", message["interactive"]["body"]["text"])
+        self.assertIn("PDF", message["interactive"]["body"]["text"])
+        self.assertNotIn("Horário:", message["interactive"]["body"]["text"])
+
+    def test_booking_is_not_sent_when_the_schedule_pdf_fails(self):
         from nova_guarda.gestao77_service import send_booking_to_partner
 
         self.accept_cooperator()
         self.create_booking()
 
-        send_booking_to_partner("880", self.phone)
+        with patch("nova_guarda.gestao77_service.fetch_schedule_pdf", side_effect=RuntimeError("77 sem PDF")):
+            with self.assertRaises(RuntimeError):
+                send_booking_to_partner("880", self.phone)
 
-        message = self.sent[0]
-        self.assertEqual(message["type"], "template")
-        self.assertEqual(self.template(message)["name"], "nova_guarda_escala_confirmacao_v2")
-        self.assertEqual(self.template(message)["language"], {"code": "pt_BR"})
-        self.assertEqual(self.button_payloads(message), ["booking_confirm:880", "booking_decline:880"])
-        self.assertEqual(
-            self.body_texts(message),
-            ["Cooperado Teste", "Rua Exemplo, 123", "08/10/2026", "13:00", "Cliente X"],
-        )
-        self.assertEqual(self.storage.get_booking("880")["whatsapp_message_id"], "wamid.1")
+        self.assertEqual(self.sent, [])
+        self.assertEqual(self.storage.get_booking("880")["local_status"], "pending")
 
     def test_template_button_reply_from_meta_confirms_the_booking(self):
         from nova_guarda.gestao77_service import send_booking_to_partner
@@ -109,6 +146,7 @@ class MetaTemplatesTest(unittest.TestCase):
         self.accept_cooperator()
         self.create_booking()
         send_booking_to_partner("880", self.phone)
+        self.sent.clear()
 
         self.client.post(
             "/webhook",
@@ -135,6 +173,8 @@ class MetaTemplatesTest(unittest.TestCase):
         )
 
         self.assertEqual(self.storage.get_booking("880")["local_status"], "confirmed")
+        self.assertIn("Escala de outubro/2026 confirmada", self.sent[-1]["text"]["body"])
+        self.assertIn("check-in em cada dia de trabalho", self.sent[-1]["text"]["body"])
 
     def test_checkin_and_checkout_templates_carry_the_appointment(self):
         from nova_guarda.gestao77_service import agenda_data_from_booking, send_checkin_to_partner, send_checkout_to_partner

@@ -221,6 +221,53 @@ def send_zapi_agenda_buttons(
     return payload
 
 
+def send_zapi_schedule(
+    phone: str,
+    message: str,
+    booking_id: str,
+    schedule_data: dict[str, Any],
+    pdf_content: bytes | None = None,
+    file_name: str = "escala.pdf",
+) -> dict[str, Any]:
+    """Envia a escala de trabalho do período com o PDF e os botões
+    Confirmar / Recusar, que carregam o booking."""
+    buttons = [
+        {"id": f"booking_confirm:{booking_id}", "label": "Confirmar"},
+        {"id": f"booking_decline:{booking_id}", "label": "Recusar"},
+    ]
+    if DEV_FAKE_ZAPI or is_simulated_phone(phone):
+        payload: dict[str, Any] = {"message": message, "buttons": buttons}
+        if pdf_content:
+            payload.update({"fileName": file_name, "document_url": f"/escalas/{booking_id}/pdf"})
+        return fake_zapi_response("send-button-list", phone, payload)
+
+    client = whatsapp_client()
+    if isinstance(client, WhatsAppOfficialClient):
+        media_id = client.upload_media(pdf_content, file_name) if pdf_content else ""
+        if meta_templates_enabled():
+            period = template_text(schedule_data.get("schedule_period"))
+            days = int(schedule_data.get("schedule_days") or 0)
+            span = f"{days} dia(s), de {schedule_data.get('schedule_first')} a {schedule_data.get('schedule_last')}"
+            response = client.send_template(
+                phone,
+                WHATSAPP_TEMPLATE_BOOKING,
+                WHATSAPP_TEMPLATE_LANGUAGE,
+                [template_text(schedule_data.get("client_name"), "cooperado(a)"), period, template_text(span)],
+                [button["id"] for button in buttons],
+                header_document_id=media_id,
+                header_document_name=file_name,
+            )
+        else:
+            response = client.send_button_list(phone, message, buttons, document_id=media_id, document_name=file_name)
+    else:
+        if pdf_content:
+            caption = f"Escala de trabalho - {schedule_data.get('schedule_period') or ''}".strip(" -")
+            client.send_document_pdf_bytes(phone, pdf_content, file_name, caption)
+        response = client.send_button_list(phone, message, buttons)
+    logger.info("Resposta envio escala WhatsApp (%s): %s", whatsapp_provider(), response)
+    return response
+
+
 def send_zapi_terms_buttons(phone: str) -> dict[str, Any]:
     message = build_terms_buttons_message()
     buttons = [
@@ -411,6 +458,7 @@ def append_fake_sent_message(phone: str, mode: str, message: str, response_paylo
             "mode": mode,
             "text": {"message": message},
             "buttons": fake_payload.get("buttons", []),
+            "document_url": fake_payload.get("document_url", ""),
             "options": fake_payload.get("options", []),
             "response": response_payload,
         },

@@ -395,6 +395,44 @@ class SelfHealingFlowTest(unittest.TestCase):
         self.assertEqual(client.update_booking_schedule_response.call_count, 2)
         self.assertEqual(self.storage.list_alerts(), [])
 
+    # escala do período ----------------------------------------------------------
+    def test_schedule_message_describes_the_whole_period_not_one_day(self):
+        from nova_guarda.gestao77_service import schedule_data_from_booking
+        from nova_guarda.messages import build_schedule_message
+
+        booking = self.create_booking(
+            "55",
+            status="pending",
+            appointments=[
+                {"id": "a1", "start_at": "2026-10-03T11:00:00Z", "end_at": "2026-10-03T20:00:00Z", "customer": {"name": "Cliente A"}},
+                {"id": "a2", "start_at": "2026-10-10T11:00:00Z", "end_at": "2026-10-10T20:00:00Z", "customer": {"name": "Cliente A"}},
+                {"id": "a3", "start_at": "2026-10-30T11:00:00Z", "end_at": "2026-10-30T20:00:00Z", "customer": {"name": "Cliente B"}},
+                {"id": "a4", "start_at": "2026-10-31T11:00:00Z", "status": "cancelled"},
+            ],
+        )
+
+        data = schedule_data_from_booking(booking)
+        with_pdf = build_schedule_message(data, has_pdf=True)
+        without_pdf = build_schedule_message(data, has_pdf=False)
+
+        self.assertEqual((data["schedule_period"], data["schedule_days"]), ("outubro/2026", 3))
+        self.assertIn("Sua escala de trabalho de outubro/2026", with_pdf)
+        self.assertIn("Dias de trabalho: 3 (de 03/10 a 30/10)", with_pdf)
+        self.assertIn("PDF", with_pdf)
+        self.assertNotIn("Horário:", with_pdf)
+        self.assertIn("03/10 08:00–17:00 · Cliente A", without_pdf)
+        self.assertIn("30/10 08:00–17:00 · Cliente B", without_pdf)
+
+    def test_schedule_pdf_route_serves_the_77gestao_pdf(self):
+        self.create_booking("55", status="pending")
+
+        with patch("nova_guarda.routes.fetch_schedule_pdf", return_value=b"%PDF-1.4 teste"):
+            response = self.client.get("/escalas/55/pdf")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/pdf")
+        self.assertEqual(self.client.get("/escalas/inexistente/pdf").status_code, 404)
+
     # 6. mês seguinte ------------------------------------------------------------
     def test_cycle_also_imports_next_month_bookings(self):
         from nova_guarda.timezone import br_now

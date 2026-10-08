@@ -28,7 +28,10 @@ class ZapiClient:
         )
 
     def send_document_pdf(self, phone: str, document_path: Path, file_name: str, caption: str) -> dict[str, Any]:
-        document_base64 = base64.b64encode(document_path.read_bytes()).decode("ascii")
+        return self.send_document_pdf_bytes(phone, document_path.read_bytes(), file_name, caption)
+
+    def send_document_pdf_bytes(self, phone: str, content: bytes, file_name: str, caption: str) -> dict[str, Any]:
+        document_base64 = base64.b64encode(content).decode("ascii")
         return self._post(
             "send-document/pdf",
             {
