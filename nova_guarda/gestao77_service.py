@@ -19,6 +19,7 @@ from nova_guarda.messages import (
     schedule_period_label,
 )
 from nova_guarda.services import append_fake_sent_message, send_zapi_agenda_buttons, send_zapi_checkin_options
+from nova_guarda.schedule_pdf import build_schedule_pdf
 from nova_guarda.services import send_zapi_schedule
 from nova_guarda.services import send_zapi_checkout_button, send_zapi_location_request
 from nova_guarda.services import whatsapp_provider
@@ -75,10 +76,7 @@ def list_pending_partner_bookings(month: int, year: int, body: dict[str, Any] | 
         statuses=PENDING_SCHEDULE_STATUSES,
         body=body,
     )
-    return [
-        upsert_booking({**enrich_booking(client, booking), "schedule_month": month, "schedule_year": year})
-        for booking in bookings
-    ]
+    return [upsert_booking(enrich_booking(client, booking)) for booking in bookings]
 
 
 def enrich_booking(client: Gestao77Client, booking: dict[str, Any]) -> dict[str, Any]:
@@ -443,6 +441,8 @@ def request_checkout_location(phone: str, status: str) -> dict[str, Any]:
 
 APPOINTMENTS_REFRESH_MINUTES = 60
 TEST_SHIFT_MINUTES = 5
+# A escala de teste repete o turno em dias seguidos: uma escala é feita de vários dias.
+TEST_SCHEDULE_DAYS = 3
 TEST_SHIFT_MAX_ATTEMPTS = 6
 
 
@@ -708,9 +708,12 @@ def agenda_data_from_booking(booking: dict[str, Any], appointment: dict[str, Any
     }
 
 
+WEEKDAY_NAMES = ["segunda-feira", "terça-feira", "quarta-feira", "quinta-feira", "sexta-feira", "sábado", "domingo"]
+
+
 def schedule_data_from_booking(booking: dict[str, Any]) -> dict[str, Any]:
-    """Resumo da escala de trabalho do período: a escala é o conjunto de dias
-    do cooperado no mês, não um atendimento só."""
+    """Resumo da escala de trabalho: o conjunto de dias deste booking (pode ser
+    uma semana, um mês ou cruzar meses), e não um atendimento só."""
     data: dict[str, Any] = dict(agenda_data_from_booking(booking))
     payload = booking.get("payload") or {}
     appointments = payload.get("appointments") if isinstance(payload.get("appointments"), list) else []
@@ -727,21 +730,27 @@ def schedule_data_from_booking(booking: dict[str, Any]) -> dict[str, Any]:
         shifts.append((starts_at, _parse_br(appointment.get("end_at")), str(customer.get("name") or "").strip()))
     shifts.sort(key=lambda item: item[0])
 
-    reference = shifts[0][0] if shifts else br_now()
-    month = int(payload.get("schedule_month") or reference.month)
-    year = int(payload.get("schedule_year") or reference.year)
     days = sorted({shift[0].date() for shift in shifts})
+    first, last = (days[0], days[-1]) if days else (br_now().date(), br_now().date())
+    if (first.month, first.year) == (last.month, last.year):
+        period = schedule_period_label(first.month, first.year)
+    else:
+        period = f"{first:%d/%m} a {last:%d/%m/%Y}"
     data.update(
         {
-            "schedule_month": month,
-            "schedule_year": year,
-            "schedule_period": schedule_period_label(month, year),
+            "booking_id": str(booking.get("booking_id") or ""),
+            "schedule_period": period,
             "schedule_days": len(days),
-            "schedule_first": days[0].strftime("%d/%m") if days else "",
-            "schedule_last": days[-1].strftime("%d/%m") if days else "",
-            "schedule_lines": [
-                f"{start:%d/%m} {start:%H:%M}" + (f"–{end:%H:%M}" if end else "") + (f" · {customer}" if customer else "")
-                for start, end, customer in shifts[:31]
+            "schedule_first": first.strftime("%d/%m") if days else "",
+            "schedule_last": last.strftime("%d/%m") if days else "",
+            "schedule_shifts": [
+                {
+                    "date": f"{start:%d/%m/%Y}",
+                    "weekday": WEEKDAY_NAMES[start.weekday()],
+                    "time": f"{start:%H:%M}" + (f" às {end:%H:%M}" if end else ""),
+                    "customer": customer,
+                }
+                for start, end, customer in shifts
             ],
         }
     )
@@ -757,18 +766,12 @@ def _parse_br(value: Any) -> datetime | None:
 
 
 def fetch_schedule_pdf(booking: dict[str, Any], schedule_data: dict[str, Any] | None = None) -> bytes | None:
-    """PDF da escala do cooperado na 77Gestão. Sem PDF só em modo fake (não
-    há 77Gestão); em modo real a falha impede o envio, porque o PDF é o
-    conteúdo da escala."""
-    if fake_gestao77_enabled():
-        return None
+    """PDF da escala, gerado aqui só com os dias deste booking. Sem dias
+    interpretáveis não há PDF (a mensagem segue sem anexo)."""
     schedule_data = schedule_data or schedule_data_from_booking(booking)
-    partner_id = str(booking.get("partner_id") or "").strip()
-    if not partner_id:
-        raise RuntimeError("Escala sem partner_id para gerar o PDF na 77Gestão.")
-    return Gestao77Client.from_env().get_cooperative_member_schedule_pdf(
-        partner_id, schedule_data["schedule_month"], schedule_data["schedule_year"]
-    )
+    if not schedule_data.get("schedule_shifts"):
+        return None
+    return build_schedule_pdf(schedule_data)
 
 
 def send_schedule_message(
@@ -883,7 +886,17 @@ def seed_test_booking_and_send(phone: str, client_name: str = "", customer_name:
         suffix = uuid.uuid4().hex[:8]
         booking_id = f"teste-{suffix}"
         appointment_id = f"teste-apt-{suffix}"
-        start_at = br_now().strftime("%Y-%m-%dT%H:%M:%S")
+        first_start = br_now()
+        start_at = first_start.strftime("%Y-%m-%dT%H:%M:%S")
+        extra_days = [
+            {
+                "id": f"{appointment_id}-d{offset + 1}",
+                "start_at": (first_start + timedelta(days=offset)).strftime("%Y-%m-%dT%H:%M:%S"),
+                "end_at": (first_start + timedelta(days=offset, minutes=TEST_SHIFT_MINUTES)).strftime("%Y-%m-%dT%H:%M:%S"),
+                "customer": {"name": customer_name.strip() or client_name.strip() or "Cliente Teste"},
+            }
+            for offset in range(1, TEST_SCHEDULE_DAYS)
+        ]
 
         upsert_booking(
             {
@@ -896,8 +909,10 @@ def seed_test_booking_and_send(phone: str, client_name: str = "", customer_name:
                     {
                         "id": appointment_id,
                         "start_at": start_at,
+                        "end_at": (first_start + timedelta(minutes=TEST_SHIFT_MINUTES)).strftime("%Y-%m-%dT%H:%M:%S"),
                         "customer": {"name": customer_name.strip() or client_name.strip() or "Cliente Teste"},
-                    }
+                    },
+                    *extra_days,
                 ],
             },
             phone=phone,
@@ -932,6 +947,12 @@ def seed_test_booking_and_send(phone: str, client_name: str = "", customer_name:
             "end_at": end_at,
             "notes": f"Teste assistido Nova Guarda - {client_name.strip() or 'Cliente Teste'}",
             "type": "appointment",
+            # Mesma recorrência da tela da 77Gestão: os dias seguintes entram
+            # no mesmo booking (criar um a um geraria um booking por dia).
+            "repeat": True,
+            "repeat_until": (start.astimezone(BR_TZ).date() + timedelta(days=TEST_SCHEDULE_DAYS - 1)).isoformat(),
+            "repeat_pattern": "weekdays",
+            "repeat_days_of_week": [0, 1, 2, 3, 4, 5, 6],
         }
         try:
             result = client.create_appointment(payload)
@@ -964,6 +985,17 @@ def seed_test_booking_and_send(phone: str, client_name: str = "", customer_name:
     if not appointment_id or not booking_id:
         raise RuntimeError("77Gestão não retornou appointment_id/booking_id ao criar o appointment.")
 
+    test_customer = {"name": customer_name.strip() or client_name.strip() or "Cliente Teste"}
+    schedule_appointments = [{"id": appointment_id, "start_at": start_at, "end_at": end_at, "customer": test_customer}]
+    try:
+        # Lista real do booking: traz os dias criados pela recorrência e o cliente de verdade.
+        listed = client.list_appointments_by_booking(booking_id)
+        listed_appointments = listed.get("appointments") if isinstance(listed, dict) else None
+        if isinstance(listed_appointments, list) and listed_appointments:
+            schedule_appointments = listed_appointments
+    except (RuntimeError, requests.RequestException):
+        pass
+
     upsert_booking(
         {
             "id": partner_id,
@@ -971,13 +1003,7 @@ def seed_test_booking_and_send(phone: str, client_name: str = "", customer_name:
             "booking_id": booking_id,
             "schedule_status": booking_info.get("status") or "awaiting_approval",
             "today_appointment_id": appointment_id,
-            "appointments": [
-                {
-                    "id": appointment_id,
-                    "start_at": start_at,
-                    "customer": {"name": customer_name.strip() or client_name.strip() or "Cliente Teste"},
-                }
-            ],
+            "appointments": schedule_appointments,
         },
         phone=phone,
     )

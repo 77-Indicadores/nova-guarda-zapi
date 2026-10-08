@@ -69,9 +69,7 @@ def build_schedule_message(data: dict[str, Any], has_pdf: bool = True) -> str:
         )
         lines += ["", f"Dias de trabalho: {days} ({span})"]
     if has_pdf:
-        lines += ["", "O PDF desta mensagem traz todos os dias, horários e clientes."]
-    elif data.get("schedule_lines"):
-        lines += [""] + list(data["schedule_lines"])
+        lines += ["", "O PDF desta mensagem traz os dias, horários e clientes desta escala."]
     lines += [
         "",
         "Confirme abaixo se você poderá cumprir esta escala. "

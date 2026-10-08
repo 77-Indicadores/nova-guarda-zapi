@@ -396,41 +396,97 @@ class SelfHealingFlowTest(unittest.TestCase):
         self.assertEqual(self.storage.list_alerts(), [])
 
     # escala do período ----------------------------------------------------------
-    def test_schedule_message_describes_the_whole_period_not_one_day(self):
-        from nova_guarda.gestao77_service import schedule_data_from_booking
-        from nova_guarda.messages import build_schedule_message
-
-        booking = self.create_booking(
+    def schedule_booking(self):
+        return self.create_booking(
             "55",
             status="pending",
             appointments=[
                 {"id": "a1", "start_at": "2026-10-03T11:00:00Z", "end_at": "2026-10-03T20:00:00Z", "customer": {"name": "Cliente A"}},
                 {"id": "a2", "start_at": "2026-10-10T11:00:00Z", "end_at": "2026-10-10T20:00:00Z", "customer": {"name": "Cliente A"}},
-                {"id": "a3", "start_at": "2026-10-30T11:00:00Z", "end_at": "2026-10-30T20:00:00Z", "customer": {"name": "Cliente B"}},
+                {"id": "a3", "start_at": "2026-10-30T11:00:00Z", "end_at": "2026-10-30T20:00:00Z", "customer": {"name": "Condomínio São João"}},
                 {"id": "a4", "start_at": "2026-10-31T11:00:00Z", "status": "cancelled"},
             ],
         )
 
-        data = schedule_data_from_booking(booking)
-        with_pdf = build_schedule_message(data, has_pdf=True)
-        without_pdf = build_schedule_message(data, has_pdf=False)
+    def pdf_text(self, content: bytes) -> str:
+        import re
+        import zlib
+
+        chunks = []
+        for match in re.finditer(rb"/Length\s+(\d+).*?stream\r?\n", content, re.S):
+            raw = content[match.end() : match.end() + int(match.group(1))]
+            try:
+                chunks.append(zlib.decompress(raw).decode("latin-1"))
+            except zlib.error:
+                continue
+        return "\n".join(chunks)
+
+    def test_schedule_message_describes_the_whole_period_not_one_day(self):
+        from nova_guarda.gestao77_service import schedule_data_from_booking
+        from nova_guarda.messages import build_schedule_message
+
+        data = schedule_data_from_booking(self.schedule_booking())
+        message = build_schedule_message(data, has_pdf=True)
 
         self.assertEqual((data["schedule_period"], data["schedule_days"]), ("outubro/2026", 3))
-        self.assertIn("Sua escala de trabalho de outubro/2026", with_pdf)
-        self.assertIn("Dias de trabalho: 3 (de 03/10 a 30/10)", with_pdf)
-        self.assertIn("PDF", with_pdf)
-        self.assertNotIn("Horário:", with_pdf)
-        self.assertIn("03/10 08:00–17:00 · Cliente A", without_pdf)
-        self.assertIn("30/10 08:00–17:00 · Cliente B", without_pdf)
+        self.assertIn("Sua escala de trabalho de outubro/2026", message)
+        self.assertIn("Dias de trabalho: 3 (de 03/10 a 30/10)", message)
+        self.assertIn("PDF", message)
+        self.assertNotIn("Horário:", message)
 
-    def test_schedule_pdf_route_serves_the_77gestao_pdf(self):
+    def test_schedule_pdf_has_only_the_days_of_this_booking(self):
+        from nova_guarda.gestao77_service import fetch_schedule_pdf
+
+        # Outra escala do mesmo cooperado no mesmo mês, já confirmada: não pode entrar no PDF.
+        self.create_booking(
+            "44",
+            status="confirmed",
+            appointments=[{"id": "old", "start_at": "2026-10-01T11:00:00Z", "end_at": "2026-10-01T20:00:00Z"}],
+        )
+
+        content = fetch_schedule_pdf(self.schedule_booking())
+
+        self.assertTrue(content.startswith(b"%PDF"))
+        text = self.pdf_text(content)
+        for expected in ("03/10/2026", "10/10/2026", "30/10/2026", "08:00", "17:00", "Cliente A", "Cooperado Teste"):
+            self.assertIn(expected, text)
+        self.assertIn("Condomínio São João", text)
+        self.assertNotIn("01/10/2026", text)
+        self.assertNotIn("31/10/2026", text)
+
+    def test_schedule_crossing_months_uses_the_date_range_as_period(self):
+        from nova_guarda.gestao77_service import schedule_data_from_booking
+
+        booking = self.create_booking(
+            "56",
+            status="pending",
+            appointments=[
+                {"id": "b1", "start_at": "2026-10-30T11:00:00Z"},
+                {"id": "b2", "start_at": "2026-11-02T11:00:00Z"},
+            ],
+        )
+
+        self.assertEqual(schedule_data_from_booking(booking)["schedule_period"], "30/10 a 02/11/2026")
+
+    def test_assisted_test_creates_a_multi_day_schedule(self):
+        from nova_guarda.gestao77_service import TEST_SCHEDULE_DAYS, schedule_data_from_booking, seed_test_booking_and_send
+
+        result = seed_test_booking_and_send(self.phone, "Cooperado Teste")
+
+        booking = self.storage.get_booking(result["booking_id"])
+        data = schedule_data_from_booking(booking)
+        self.assertEqual(data["schedule_days"], TEST_SCHEDULE_DAYS)
+        self.assertEqual(len(booking["payload"]["appointments"]), TEST_SCHEDULE_DAYS)
+        self.assertEqual(booking["local_status"], "sent")
+
+    def test_schedule_pdf_route_serves_the_generated_pdf(self):
         self.create_booking("55", status="pending")
 
-        with patch("nova_guarda.routes.fetch_schedule_pdf", return_value=b"%PDF-1.4 teste"):
-            response = self.client.get("/escalas/55/pdf")
+        response = self.client.get("/escalas/55/pdf")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.mimetype, "application/pdf")
+        self.assertTrue(response.data.startswith(b"%PDF"))
         self.assertEqual(self.client.get("/escalas/inexistente/pdf").status_code, 404)
 
     # 6. mês seguinte ------------------------------------------------------------

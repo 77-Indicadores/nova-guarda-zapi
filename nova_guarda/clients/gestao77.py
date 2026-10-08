@@ -127,22 +127,6 @@ class Gestao77Client:
             ]
         return payload
 
-    def get_cooperative_member_schedule_pdf(self, partner_id: str | int, month: int, year: int) -> bytes:
-        """PDF da escala do cooperado no mês, o mesmo do botão de PDF em
-        Escala > Gerenciar Cooperados da 77Gestão."""
-        if not self.token:
-            raise RuntimeError("Configure GESTAO77_TOKEN ou GESTAO77_EMAIL/GESTAO77_PASSWORD.")
-        response = requests.get(
-            f"{self.base_url}/partners/{partner_id}/cooperative-member-schedule-pdf",
-            params={"month": month, "year": year},
-            headers={"Authorization": f"Bearer {self.token}", "Accept": "application/pdf"},
-            timeout=60,
-        )
-        _raise_with_body(response)
-        if not response.content.startswith(b"%PDF"):
-            raise RuntimeError("77Gestão não devolveu um PDF válido para a escala do cooperado.")
-        return response.content
-
     def release_booking_for_send(self, booking_id: str | int) -> dict[str, Any]:
         """Mesmo passo do botão "Enviar escala" da 77Gestão: leva a escala de
         "aguardando aprovação" para "aguardando envio", único status a partir

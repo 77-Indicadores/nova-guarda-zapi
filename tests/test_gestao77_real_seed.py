@@ -106,6 +106,10 @@ class RealGestao77SeedTest(unittest.TestCase):
         fake_client.release_booking_for_send.assert_called_once_with("3")
 
         payload = fake_client.create_appointment.call_args[0][0]
+        # Recorrência: os dias seguintes entram no mesmo booking na 77Gestão.
+        self.assertTrue(payload["repeat"])
+        self.assertEqual(payload["repeat_pattern"], "weekdays")
+        self.assertGreater(payload["repeat_until"], payload["start_at"][:10])
         self.assertEqual(payload["partner_id"], 603)
         self.assertEqual(payload["customer_id"], 7957)
         self.assertEqual(payload["type"], "appointment")
