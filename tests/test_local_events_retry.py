@@ -76,16 +76,18 @@ class LocalEventsAndRetryTest(unittest.TestCase):
         )
 
     def send_location(self, address="Rua Teste, 100 - Santos"):
-        return self.client.post(
-            "/webhook",
-            json={
-                "type": "ReceivedCallback",
-                "fromMe": False,
-                "isGroup": False,
-                "phone": self.phone,
-                "location": {"latitude": -23.96, "longitude": -46.33, "address": address},
-            },
-        )
+        # Localização atual: só coordenadas. O endereço vem da conversão feita pelo bot.
+        with patch("nova_guarda.routes.reverse_geocode", return_value=address):
+            return self.client.post(
+                "/webhook",
+                json={
+                    "type": "ReceivedCallback",
+                    "fromMe": False,
+                    "isGroup": False,
+                    "phone": self.phone,
+                    "location": {"latitude": -23.96, "longitude": -46.33},
+                },
+            )
 
     def appointment_sync_count(self):
         with self.storage.connect() as conn:

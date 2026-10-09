@@ -107,16 +107,18 @@ class CheckinCheckoutFlowTest(unittest.TestCase):
         )
 
     def send_location(self, address="Rua Teste, 100 - Santos"):
-        return self.client.post(
-            "/webhook",
-            json={
-                "type": "ReceivedCallback",
-                "fromMe": False,
-                "isGroup": False,
-                "phone": self.phone,
-                "location": {"latitude": -23.96, "longitude": -46.33, "address": address},
-            },
-        )
+        # Localização atual: só coordenadas. O endereço vem da conversão feita pelo bot.
+        with patch("nova_guarda.routes.reverse_geocode", return_value=address):
+            return self.client.post(
+                "/webhook",
+                json={
+                    "type": "ReceivedCallback",
+                    "fromMe": False,
+                    "isGroup": False,
+                    "phone": self.phone,
+                    "location": {"latitude": -23.96, "longitude": -46.33},
+                },
+            )
 
     def sync_count(self, appointment_id, status):
         with self.storage.connect() as conn:
@@ -245,6 +247,46 @@ class CheckinCheckoutFlowTest(unittest.TestCase):
             if event["payload"].get("type") == "AutoReply":
                 return event["payload"]["text"]["message"]
         return ""
+
+    def send_place(self, **place):
+        return self.client.post(
+            "/webhook",
+            json={
+                "type": "ReceivedCallback",
+                "fromMe": False,
+                "isGroup": False,
+                "phone": self.phone,
+                "location": {"latitude": -23.96, "longitude": -46.33, **place},
+            },
+        )
+
+    def test_chosen_place_is_refused_only_current_location_counts(self):
+        self.accept_cooperator()
+        self.create_booking()
+        self.post_checkin_send()
+        self.send_reply(f"checkin_arrived:{self.appointment_id}")
+
+        self.send_place(name="Condomínio Laguna", address="Av. Ana Costa, 550 - Santos")
+        self.assertIn("localização atual", self.last_bot_text())
+        self.assertEqual(self.storage.get_appointment(self.appointment_id)["local_status"], "location_pending")
+        self.send_place(address="Av. Ana Costa, 550 - Santos")
+        self.assertEqual(self.storage.get_appointment(self.appointment_id)["local_status"], "location_pending")
+        self.assertEqual(self.sync_count(self.appointment_id, "checked_in"), 0)
+
+        self.send_location()
+        self.assertEqual(self.storage.get_appointment(self.appointment_id)["local_status"], "checked_in")
+
+    def test_meta_place_and_current_location_are_told_apart(self):
+        from nova_guarda.routes import is_chosen_place, normalize_incoming_whatsapp_payload
+
+        def meta(location):
+            return normalize_incoming_whatsapp_payload(
+                {"entry": [{"changes": [{"value": {"messages": [{"from": self.phone, "id": "w1", "type": "location", "location": location}]}}]}]}
+            )["location"]
+
+        self.assertFalse(is_chosen_place(meta({"latitude": -24.0, "longitude": -46.4})))
+        self.assertTrue(is_chosen_place(meta({"latitude": -24.0, "longitude": -46.4, "name": "Padaria"})))
+        self.assertTrue(is_chosen_place(meta({"latitude": -24.0, "longitude": -46.4, "address": "Rua X, 1"})))
 
     def test_out_of_order_taps_get_a_specific_explanation(self):
         self.accept_cooperator()

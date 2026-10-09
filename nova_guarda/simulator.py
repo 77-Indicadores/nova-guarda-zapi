@@ -1020,8 +1020,7 @@ DEV_CHAT_HTML = """
     document.querySelector("#send-location").addEventListener("click", () => {
       sendIncoming("", {
         latitude: Number(lat.value),
-        longitude: Number(lng.value),
-        address: "Localização fake do dev"
+        longitude: Number(lng.value)
       });
     });
 

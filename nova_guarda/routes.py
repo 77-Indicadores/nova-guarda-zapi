@@ -222,6 +222,12 @@ def process_webhook_payload(payload: dict) -> None:
 TEAM_HELP = "Fale com a equipe da Nova Guarda."
 
 
+def is_chosen_place(location: dict) -> bool:
+    """O WhatsApp só preenche nome/endereço quando o cooperado escolhe um
+    lugar; a localização atual chega apenas com as coordenadas."""
+    return any(str(location.get(key) or "").strip() for key in ("name", "address"))
+
+
 def send_refusal(phone: str, reply: str) -> None:
     try:
         response_payload = send_zapi_text(phone, reply)
@@ -440,13 +446,21 @@ def handle_webhook_payload(payload: dict) -> None:
             longitude = location.get("longitude")
             if latitude is None or longitude is None:
                 return
+            if is_chosen_place(location):
+                # Só a localização atual (GPS) vale como prova de presença. Um
+                # lugar escolhido na lista/busca vem com nome ou endereço.
+                send_refusal(
+                    phone,
+                    "Para registrar, preciso da sua localização atual, e não de um lugar escolhido na lista ou na busca. "
+                    "Toque no clipe 📎 > Localização > “Enviar localização atual”.",
+                )
+                return
             maps_url = f"https://www.google.com/maps?q={latitude},{longitude}"
-            address = str(location.get("address") or "").strip()
-            if not address:
-                try:
-                    address = reverse_geocode(float(latitude), float(longitude))
-                except (RuntimeError, requests.RequestException, TypeError, ValueError) as exc:
-                    logger.exception("Erro ao converter localização em endereço: %s", exc)
+            address = ""
+            try:
+                address = reverse_geocode(float(latitude), float(longitude))
+            except (RuntimeError, requests.RequestException, TypeError, ValueError) as exc:
+                logger.exception("Erro ao converter localização em endereço: %s", exc)
             address = address or maps_url
             location_payload = {
                 "latitude": latitude,
@@ -744,7 +758,8 @@ def normalize_incoming_whatsapp_payload(payload: dict) -> dict:
         normalized["location"] = {
             "latitude": location.get("latitude"),
             "longitude": location.get("longitude"),
-            "address": location.get("address") or location.get("name") or "",
+            "name": location.get("name") or "",
+            "address": location.get("address") or "",
             "url": location.get("url", ""),
         }
 
@@ -1262,6 +1277,7 @@ def create_app() -> Flask:
             zapi_payload["location"] = {
                 "latitude": location.get("latitude"),
                 "longitude": location.get("longitude"),
+                "name": str(location.get("name", "")).strip(),
                 "address": str(location.get("address", "")).strip(),
                 "url": str(location.get("url", "")).strip(),
             }
