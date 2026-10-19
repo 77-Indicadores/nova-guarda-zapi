@@ -119,7 +119,7 @@ def schedule_template_parameters(agenda_data: dict[str, str], with_address: bool
     parameters = [template_text(agenda_data.get("client_name"), "cooperado(a)")]
     if with_address:
         parameters.append(template_text(agenda_data.get("client_address"), "Endereço não informado"))
-    return parameters + [date_text, time_text, template_text(agenda_data.get("service"), "Atendimento Nova Guarda")]
+    return parameters + [date_text, time_text, template_text(agenda_data.get("service"), "Atendimento Guarda Nova")]
 
 
 def terms_template_required(phone: str) -> bool:
@@ -177,13 +177,13 @@ def send_zapi_document(phone: str, document_path: Path, caption: str) -> dict[st
         return fake_zapi_response(
             "send-document/pdf",
             phone,
-            {"fileName": "Termo de Aceite - Nova Guarda.pdf", "caption": caption},
+            {"fileName": "Termo de Aceite - Guarda Nova.pdf", "caption": caption},
         )
 
     payload = whatsapp_client().send_document_pdf(
         phone,
         document_path,
-        "Termo de Aceite - Nova Guarda.pdf",
+        "Termo de Aceite - Guarda Nova.pdf",
         caption,
     )
     logger.info("Resposta envio documento WhatsApp (%s): %s", whatsapp_provider(), payload)
@@ -310,7 +310,7 @@ def send_zapi_checkin_options(
         {
             "id": f"checkin_not_going:{appointment_id}" if appointment_id else "checkin_not_going",
             "title": "Não vou",
-            "description": "Informar motivo para a Nova Guarda",
+            "description": "Informar motivo para a Guarda Nova",
         },
     ]
     if DEV_FAKE_ZAPI or is_simulated_phone(phone):

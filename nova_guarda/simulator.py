@@ -4,7 +4,7 @@ CHAT_HTML = """
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Nova Guarda Chat</title>
+  <title>Guarda Nova Chat</title>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -157,7 +157,7 @@ CHAT_HTML = """
 <body>
   <div class="shell">
     <header>
-      <h1>Nova Guarda Chat</h1>
+      <h1>Guarda Nova Chat</h1>
       <div class="status"><span class="dot"></span> online na porta {{ port }}</div>
     </header>
     <main>
@@ -294,9 +294,9 @@ CHAT_HTML = """
       const address = data.client_address || "Endereço não informado";
       const date = data.schedule_date || "Data não informada";
       const time = data.schedule_time || "Horário não informado";
-      const service = data.service || "Atendimento Nova Guarda";
+      const service = data.service || "Atendimento Guarda Nova";
 
-      return `Olá, ${client}. Aqui é a Nova Guarda.
+      return `Olá, ${client}. Aqui é a Guarda Nova.
 
 Sua escala está disponível para confirmação:
 
@@ -314,9 +314,9 @@ Confirme abaixo se você poderá atender esta escala.`;
       const address = data.client_address || "Endereço não informado";
       const date = data.schedule_date || "Data não informada";
       const time = data.schedule_time || "Horário não informado";
-      const service = data.service || "Atendimento Nova Guarda";
+      const service = data.service || "Atendimento Guarda Nova";
 
-      return `Olá, ${client}. Aqui é a Nova Guarda.
+      return `Olá, ${client}. Aqui é a Guarda Nova.
 
 Está na hora de confirmar sua chegada para o atendimento:
 
@@ -335,11 +335,11 @@ Selecione a opção que corresponde à sua situação agora.`;
     function buildTermsPreview() {
       const data = Object.fromEntries(agendaFields.map((field) => [field.name, field.value.trim()]));
       const client = data.client_name || "cooperado(a)";
-      return `Olá, ${client}. Aqui é a Nova Guarda.
+      return `Olá, ${client}. Aqui é a Guarda Nova.
 
 Para receber avisos de escala, check-in e orientações operacionais por este WhatsApp, precisamos do seu aceite no termo de uso e consentimento.
 
-Leia o termo enviado e escolha uma das opções abaixo. Seu aceite ficará registrado pela Nova Guarda.`;
+Leia o termo enviado e escolha uma das opções abaixo. Seu aceite ficará registrado pela Guarda Nova.`;
     }
 
     function syncMessagePreview() {

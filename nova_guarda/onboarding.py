@@ -120,14 +120,14 @@ def handle_activation_request(phone: str, text: str) -> dict[str, Any]:
     existing = get_cooperator(phone)
 
     if existing and existing.get("onboarding_status") == "accepted":
-        reply = "Seu cadastro já está ativo para receber comunicações operacionais da Nova Guarda."
+        reply = "Seu cadastro já está ativo para receber comunicações operacionais da Guarda Nova."
         response = send_zapi_text(phone, reply)
         return {"status": "accepted", "reply": reply, "response": response, "cooperator": existing}
 
     if existing and existing.get("onboarding_status") == "rejected":
         reply = (
             "Existe uma recusa do termo de uso e consentimento registrada para este número. "
-            "Por enquanto, o fluxo permanece bloqueado. Fale com a equipe da Nova Guarda."
+            "Por enquanto, o fluxo permanece bloqueado. Fale com a equipe da Guarda Nova."
         )
         response = send_zapi_text(phone, reply)
         return {"status": "rejected", "reply": reply, "response": response, "cooperator": existing}
@@ -140,14 +140,14 @@ def handle_activation_request(phone: str, text: str) -> dict[str, Any]:
     partner = find_allowed_partner_by_phone(phone)
     if not partner:
         cooperator = upsert_cooperator(phone, "not_started", {}, text)
-        reply = "Não encontrei seu número no cadastro da Nova Guarda. Fale com a equipe para atualizar seu WhatsApp."
+        reply = "Não encontrei seu número no cadastro da Guarda Nova. Fale com a equipe para atualizar seu WhatsApp."
         response = send_zapi_text(phone, reply)
         save_sync_event("cooperator", phone, "activation:not_found", True, {"phone": phone}, {"reply": reply})
         return {"status": "not_started", "reply": reply, "response": response, "cooperator": cooperator}
 
     if not partner_is_active_cooperator(partner):
         cooperator = upsert_cooperator(phone, "not_started", partner, text)
-        reply = "Seu cadastro foi encontrado, mas não está ativo para receber comunicações por este fluxo. Fale com a equipe da Nova Guarda."
+        reply = "Seu cadastro foi encontrado, mas não está ativo para receber comunicações por este fluxo. Fale com a equipe da Guarda Nova."
         response = send_zapi_text(phone, reply)
         save_sync_event("cooperator", phone, "activation:inactive", True, {"phone": phone}, {"partner_id": partner.get("id")})
         return {"status": "not_started", "reply": reply, "response": response, "cooperator": cooperator}
@@ -159,7 +159,7 @@ def handle_activation_request(phone: str, text: str) -> dict[str, Any]:
 
 
 def send_terms_to_phone(phone: str, partner: dict[str, Any] | None = None, source: str = "manual") -> dict[str, Any]:
-    """Envia o termo por iniciativa da Nova Guarda (disparo diário ou manual),
+    """Envia o termo por iniciativa da Guarda Nova (disparo diário ou manual),
     sem o cooperado precisar mandar “ativar”. Nunca reenvia para quem já
     aceitou ou recusou."""
     phone = normalize_phone(phone)
@@ -246,17 +246,17 @@ def accept_terms(phone: str, text: str) -> dict[str, Any]:
     phone = normalize_phone(phone)
     existing = get_cooperator(phone)
     if not existing:
-        reply = "Antes de aceitar o termo, envie “ativar” para validarmos seu cadastro na Nova Guarda."
+        reply = "Antes de aceitar o termo, envie “ativar” para validarmos seu cadastro na Guarda Nova."
         response = send_zapi_text(phone, reply)
         return {"status": "not_started", "reply": reply, "response": response}
 
     if existing.get("onboarding_status") == "rejected":
-        reply = "O termo já foi recusado neste número e o fluxo está bloqueado. Fale com a equipe da Nova Guarda."
+        reply = "O termo já foi recusado neste número e o fluxo está bloqueado. Fale com a equipe da Guarda Nova."
         response = send_zapi_text(phone, reply)
         return {"status": "rejected", "reply": reply, "response": response, "cooperator": existing}
 
     cooperator = upsert_cooperator(phone, "accepted", existing.get("partner_payload", {}), text)
-    reply = "Aceite registrado com sucesso. Seu cadastro está ativo para receber comunicações operacionais da Nova Guarda."
+    reply = "Aceite registrado com sucesso. Seu cadastro está ativo para receber comunicações operacionais da Guarda Nova."
     response = send_zapi_text(phone, reply)
     if meta_templates_enabled():
         # O aceite pode ter vindo pelo template, que não carrega o PDF.
@@ -273,7 +273,7 @@ def reject_terms(phone: str, text: str) -> dict[str, Any]:
     existing = get_cooperator(phone)
     partner = existing.get("partner_payload", {}) if existing else {}
     cooperator = upsert_cooperator(phone, "rejected", partner, text)
-    reply = "Recusa registrada. O fluxo de comunicações operacionais da Nova Guarda ficará bloqueado para este número."
+    reply = "Recusa registrada. O fluxo de comunicações operacionais da Guarda Nova ficará bloqueado para este número."
     response = send_zapi_text(phone, reply)
     save_sync_event("cooperator", phone, "terms:rejected", True, {"phone": phone}, {"partner_id": cooperator.get("partner_id")})
     return {"status": "rejected", "reply": reply, "response": response, "cooperator": cooperator}
@@ -369,7 +369,7 @@ def send_terms_flow(phone: str, partner: dict[str, Any], resend: bool = False) -
     intro = (
         "Seu termo de uso e consentimento ainda está pendente. Reenviei as opções de aceite."
         if resend
-        else "Antes de continuar, salve este contato da Nova Guarda para receber comunicados de escala, check-in e orientações operacionais."
+        else "Antes de continuar, salve este contato da Guarda Nova para receber comunicados de escala, check-in e orientações operacionais."
     )
     intro_response = send_zapi_text(phone, intro)
     append_fake_sent_message(phone, "onboarding", intro, intro_response)

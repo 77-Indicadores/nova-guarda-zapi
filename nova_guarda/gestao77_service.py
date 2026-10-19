@@ -826,7 +826,7 @@ def send_schedule_message(
 ) -> tuple[str, dict[str, Any]]:
     pdf_content = fetch_schedule_pdf(booking, schedule_data)
     message = prefix + build_schedule_message(schedule_data, has_pdf=bool(pdf_content))
-    file_name = f"Escala Nova Guarda - {schedule_data['schedule_period'].replace('/', ' ')}.pdf"
+    file_name = f"Escala Guarda Nova - {schedule_data['schedule_period'].replace('/', ' ')}.pdf"
     response = send_zapi_schedule(phone, message, str(booking.get("booking_id")), schedule_data, pdf_content, file_name)
     append_fake_sent_message(phone, "agenda", message, response)
     return message, response
@@ -989,7 +989,7 @@ def seed_test_booking_and_send(phone: str, client_name: str = "", customer_name:
             "customer_id": int(GESTAO77_TEST_CUSTOMER_ID),
             "start_at": start_at,
             "end_at": end_at,
-            "notes": f"Teste assistido Nova Guarda - {client_name.strip() or 'Cliente Teste'}",
+            "notes": f"Teste assistido Guarda Nova - {client_name.strip() or 'Cliente Teste'}",
             "type": "appointment",
             # Mesma recorrência da tela da 77Gestão: os dias seguintes entram
             # no mesmo booking (criar um a um geraria um booking por dia).

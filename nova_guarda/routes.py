@@ -219,7 +219,7 @@ def process_webhook_payload(payload: dict) -> None:
         raise
 
 
-TEAM_HELP = "Fale com a equipe da Nova Guarda."
+TEAM_HELP = "Fale com a equipe da Guarda Nova."
 
 
 def is_chosen_place(location: dict) -> bool:
@@ -334,7 +334,7 @@ def reply_unrecognized_message(phone: str) -> None:
         else:
             reply = (
                 "Não consegui entender sua mensagem. Para responder escala, check-in ou check-out, "
-                "use os botões das mensagens da Nova Guarda. Se precisar de ajuda, fale com a equipe."
+                "use os botões das mensagens da Guarda Nova. Se precisar de ajuda, fale com a equipe."
             )
             response_payload = send_zapi_text(phone, reply)
         append_conversation_event(
@@ -479,14 +479,14 @@ def handle_webhook_payload(payload: dict) -> None:
                 reply_status = "presence_sync_error"
 
             if reply_status == "presence_sync_error":
-                reply = "Não consegui registrar sua presença agora. Fale com a equipe da Nova Guarda."
+                reply = "Não consegui registrar sua presença agora. Fale com a equipe da Guarda Nova."
             elif sync_result is None:
                 reply_status = "location_ignored"
                 reply = "Recebemos sua localização, mas não há check-in nem check-out aguardando localização neste momento."
             else:
                 reply_status = str(sync_result.get("status") or "checked_in")
                 step = "Check-out" if reply_status == "checked_out" else "Check-in"
-                reply = f"{step} registrado com sucesso pela Nova Guarda.\nLocal: {address}"
+                reply = f"{step} registrado com sucesso pela Guarda Nova.\nLocal: {address}"
                 state = AGENDA_STATE.setdefault(phone, {"phone": phone, "agenda": {}, "history": []})
                 state["status"] = reply_status
                 state["status_label"] = checkin_status_label(reply_status)
@@ -619,7 +619,7 @@ def handle_webhook_payload(payload: dict) -> None:
                             "late_reported",
                         )
                     reply = (
-                        f"Atraso de {local_result['late_minutes']} minutos registrado e a equipe da Nova Guarda foi avisada. "
+                        f"Atraso de {local_result['late_minutes']} minutos registrado e a equipe da Guarda Nova foi avisada. "
                         "Quando chegar, toque em “Sim, cheguei” na mensagem de check-in."
                     )
                     response_payload = send_zapi_text(phone, reply)
@@ -657,7 +657,7 @@ def handle_webhook_payload(payload: dict) -> None:
                         )
                     reply = (
                         f"Não comparecimento registrado com motivo: {local_result['reason']}. "
-                        "A equipe da Nova Guarda foi avisada."
+                        "A equipe da Guarda Nova foi avisada."
                     )
                     response_payload = send_zapi_text(phone, reply)
                     append_conversation_event(

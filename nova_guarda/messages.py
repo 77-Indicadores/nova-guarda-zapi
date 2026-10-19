@@ -59,7 +59,7 @@ def schedule_details(data: dict[str, str]) -> str:
         lines.append(f"Endereço: {data['client_address']}")
     lines.append(f"Data: {date or 'Data não informada'}")
     lines.append(f"Horário: {time or 'Horário não informado'}")
-    lines.append(f"Atendimento: {data.get('service') or 'Atendimento Nova Guarda'}")
+    lines.append(f"Atendimento: {data.get('service') or 'Atendimento Guarda Nova'}")
     return "\n".join(lines)
 
 
@@ -84,7 +84,7 @@ def build_schedule_message(data: dict[str, Any], has_pdf: bool = True) -> str:
     period = data.get("schedule_period") or "período"
     days = int(data.get("schedule_days") or 0)
     lines = [
-        f"Olá, {name}. Aqui é a Nova Guarda.",
+        f"Olá, {name}. Aqui é a Guarda Nova.",
         "",
         f"Sua escala de trabalho de {period} está disponível para confirmação.",
     ]
@@ -111,10 +111,10 @@ def build_agenda_message(data: dict[str, str]) -> str:
     date, time = format_schedule(data)
     date = date or "Data não informada"
     time = time or "Horário não informado"
-    service = data.get("service") or "Atendimento Nova Guarda"
+    service = data.get("service") or "Atendimento Guarda Nova"
 
     return (
-        f"Olá, {client}. Aqui é a Nova Guarda.\n\n"
+        f"Olá, {client}. Aqui é a Guarda Nova.\n\n"
         "Sua escala está disponível para confirmação:\n\n"
         f"Endereço: {address}\n"
         f"Data: {date}\n"
@@ -127,7 +127,7 @@ def build_agenda_message(data: dict[str, str]) -> str:
 def build_checkin_message(data: dict[str, str]) -> str:
     client = data.get("client_name") or "cooperado(a)"
     return (
-        f"Olá, {client}. Aqui é a Nova Guarda.\n\n"
+        f"Olá, {client}. Aqui é a Guarda Nova.\n\n"
         "Está na hora de confirmar sua chegada para o atendimento:\n\n"
         f"{schedule_details(data)}\n\n"
         "Selecione a opção que corresponde à sua situação agora."
@@ -141,7 +141,7 @@ def build_checkin2_message(data: dict[str, str]) -> str:
 def build_terms_message(data: dict[str, str]) -> str:
     client = data.get("client_name") or "cooperado(a)"
     return (
-        f"Termo de uso e consentimento - Nova Guarda\n"
+        f"Termo de uso e consentimento - Guarda Nova\n"
         f"Cooperado(a): {client}"
     )
 
@@ -150,7 +150,7 @@ def build_terms_buttons_message() -> str:
     return (
         "Para receber avisos de escala, check-in e orientações operacionais por este WhatsApp, "
         "precisamos do seu aceite no termo de uso e consentimento.\n\n"
-        "Leia o PDF enviado acima e escolha uma opção. Seu aceite ficará registrado pela Nova Guarda."
+        "Leia o PDF enviado acima e escolha uma opção. Seu aceite ficará registrado pela Guarda Nova."
     )
 
 
@@ -164,10 +164,10 @@ def build_confirmation_reply(status: str, agenda: dict[str, Any] | None = None) 
     if status == "confirmed":
         return f"Escala{period} confirmada{name}. Você receberá o check-in em cada dia de trabalho."
     if status == "cancelled":
-        return f"Recusa da escala{period} registrada pela Nova Guarda."
+        return f"Recusa da escala{period} registrada pela Guarda Nova."
     if status == "conflict":
-        return "Recebemos sua nova resposta. Como ela altera uma escala já recusada, a equipe Nova Guarda fará a revisão manual."
-    return "Resposta recebida pela Nova Guarda."
+        return "Recebemos sua nova resposta. Como ela altera uma escala já recusada, a equipe Guarda Nova fará a revisão manual."
+    return "Resposta recebida pela Guarda Nova."
 
 
 def build_checkin_reply(status: str) -> str:
@@ -184,15 +184,15 @@ def build_checkin_reply(status: str) -> str:
             "O check-out só é registrado depois que a localização chegar."
         )
     if status == "location_received":
-        return "Localização recebida com sucesso pela Nova Guarda."
+        return "Localização recebida com sucesso pela Guarda Nova."
     if status == "late":
         return "Informe a previsão de atraso para registrarmos internamente."
     if status == "late_15":
-        return "Atraso de 15 minutos registrado pela Nova Guarda."
+        return "Atraso de 15 minutos registrado pela Guarda Nova."
     if status == "late_30":
-        return "Atraso de 30 minutos registrado pela Nova Guarda."
+        return "Atraso de 30 minutos registrado pela Guarda Nova."
     if status == "late_60":
-        return "Atraso de 1 hora registrado pela Nova Guarda."
+        return "Atraso de 1 hora registrado pela Guarda Nova."
     if status == "not_going":
         return "Informe o motivo do não comparecimento para registrarmos internamente."
     if status == "reason_personal":
@@ -203,4 +203,4 @@ def build_checkin_reply(status: str) -> str:
         return "Não comparecimento registrado com motivo: cliente cancelou."
     if status == "reason_other":
         return "Não comparecimento registrado com motivo: outro. Se necessário, envie mais detalhes em uma nova mensagem."
-    return "Resposta de check-in recebida pela Nova Guarda."
+    return "Resposta de check-in recebida pela Guarda Nova."

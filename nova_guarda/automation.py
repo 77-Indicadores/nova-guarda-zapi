@@ -163,7 +163,7 @@ def run_automation_once(month: int | None = None, year: int | None = None, limit
         run = save_poller_run(status, payload, started_at=started_at)
         return {"ok": status == "success", "run": run, **payload}
     except Exception as exc:
-        logger.exception("Erro na automação Nova Guarda: %s", exc)
+        logger.exception("Erro na automação Guarda Nova: %s", exc)
         payload["error"] = str(exc)
         run = save_poller_run("failed", payload, error=str(exc), started_at=started_at)
         return {"ok": False, "run": run, **payload}

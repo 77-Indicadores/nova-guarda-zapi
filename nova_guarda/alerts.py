@@ -40,7 +40,7 @@ def notify_team(message: str) -> None:
     if not alert_phone:
         return
     try:
-        send_zapi_text(alert_phone, f"[Nova Guarda] {message}")
+        send_zapi_text(alert_phone, f"[Guarda Nova] {message}")
     except (RuntimeError, requests.RequestException, ValueError) as exc:
         logger.exception("Erro ao avisar a equipe sobre alerta: %s", exc)
 
