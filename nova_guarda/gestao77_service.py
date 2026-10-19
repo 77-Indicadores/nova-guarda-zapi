@@ -1201,7 +1201,9 @@ def seed_test_booking_and_send(phone: str, client_name: str = "", customer_name:
             # Mesma recorrência da tela da 77Gestão: os dias seguintes entram
             # no mesmo booking (criar um a um geraria um booking por dia).
             "repeat": True,
-            "repeat_until": (start.astimezone(BR_TZ).date() + timedelta(days=TEST_SCHEDULE_DAYS - 1)).isoformat(),
+            # A 77Gestão compara repeat_until com a data em UTC do início: à noite
+            # (depois das 21h em Brasília) a data local ficaria um dia atrás.
+            "repeat_until": (start + timedelta(days=TEST_SCHEDULE_DAYS - 1)).date().isoformat(),
             "repeat_pattern": "weekdays",
             "repeat_days_of_week": [0, 1, 2, 3, 4, 5, 6],
         }

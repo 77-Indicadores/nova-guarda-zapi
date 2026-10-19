@@ -110,6 +110,11 @@ class RealGestao77SeedTest(unittest.TestCase):
         self.assertTrue(payload["repeat"])
         self.assertEqual(payload["repeat_pattern"], "weekdays")
         self.assertGreater(payload["repeat_until"], payload["start_at"][:10])
+        # Data em UTC, como a 77Gestão compara: 3 dias a partir do início.
+        from datetime import date
+
+        start_day = date.fromisoformat(payload["start_at"][:10])
+        self.assertEqual((date.fromisoformat(payload["repeat_until"]) - start_day).days, 2)
         self.assertEqual(payload["partner_id"], 603)
         self.assertEqual(payload["customer_id"], 7957)
         self.assertEqual(payload["type"], "appointment")

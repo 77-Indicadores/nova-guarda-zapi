@@ -74,7 +74,15 @@ def run_automation_once(month: int | None = None, year: int | None = None, limit
 
     try:
         payload["purged_fake_bookings"] = purge_bookings_without_gestao77_id()
-        bookings = list_pending_partner_bookings(month, year)
+        try:
+            bookings = list_pending_partner_bookings(month, year)
+        except (RuntimeError, requests.RequestException, ValueError) as exc:
+            # 77Gestão fora do ar: sem novas escalas neste ciclo, mas lembretes,
+            # alertas, check-in/check-out já agendados e o reenvio seguem rodando.
+            logger.warning("Não consegui consultar escalas na 77Gestão: %s", exc)
+            payload["gestao77_error"] = str(exc)
+            bookings = []
+            explicit_period = True
         if not explicit_period:
             # Escala do mês seguinte liberada para envio não espera o mês virar.
             next_month, next_year = (1, year + 1) if month == 12 else (month + 1, year)
@@ -153,7 +161,7 @@ def run_automation_once(month: int | None = None, year: int | None = None, limit
         purge_webhook_events((now - timedelta(days=WEBHOOK_EVENT_RETENTION_DAYS)).isoformat(timespec="seconds"))
 
         payload["retry"] = retry_pending_gestao77_syncs()
-        has_errors = any(
+        has_errors = bool(payload.get("gestao77_error")) or any(
             item.get("error")
             for group in ("items", "terms", "checkins", "checkouts", "followups")
             for item in payload[group]

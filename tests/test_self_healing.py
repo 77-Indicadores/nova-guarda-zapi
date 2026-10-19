@@ -558,6 +558,27 @@ class SelfHealingFlowTest(unittest.TestCase):
             self.assertIn("Atendimento: Cliente A", message)
             self.assertNotIn("Endereço", message)
 
+    def test_77gestao_down_does_not_stop_reminders_and_alerts(self):
+        import requests
+
+        from nova_guarda.automation import run_automation_once
+        from nova_guarda.gestao77_service import send_booking_to_partner
+
+        self.create_booking("booking-1", status="pending")
+        send_booking_to_partner("booking-1", self.phone)
+        later = self.now() + timedelta(hours=13)
+
+        with patch("nova_guarda.automation.br_now", return_value=later), patch(
+            "nova_guarda.storage.timestamp", return_value=later.isoformat(timespec="seconds")
+        ), patch(
+            "nova_guarda.automation.list_pending_partner_bookings", side_effect=requests.ConnectionError("77 fora")
+        ), patch("nova_guarda.automation.retry_pending_gestao77_syncs", return_value={"ok": True, "results": []}):
+            result = run_automation_once()
+
+        self.assertEqual(result["run"]["status"], "partial")
+        self.assertIn("77 fora", result["gestao77_error"])
+        self.assertEqual([item["action"] for item in result["followups"]], ["reminder"])
+
     # 6. mês seguinte ------------------------------------------------------------
     def test_cycle_also_imports_next_month_bookings(self):
         from nova_guarda.timezone import br_now
