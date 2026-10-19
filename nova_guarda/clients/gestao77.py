@@ -82,14 +82,30 @@ class Gestao77Client:
             and str(member.get("schedule_status", "")) in statuses
         ]
 
-    def update_appointment_status(self, appointment_id: str, status: str, address: str = "") -> dict[str, Any]:
-        return self._post(
-            f"/appointments/{appointment_id}/status",
-            {
-                "status": status,
-                "address": address,
-            },
-        )
+    def update_appointment_status(
+        self,
+        appointment_id: str,
+        status: str,
+        address: str = "",
+        latitude: Any = None,
+        longitude: Any = None,
+        justification: str | None = None,
+    ) -> dict[str, Any]:
+        """checked_in / checked_out exigem latitude e longitude: a 77Gestão
+        confere se o cooperado está a até 200 m do local do atendimento.
+        late / absent são avisos e aceitam uma justificativa."""
+        payload: dict[str, Any] = {"status": status, "address": address}
+        if latitude is not None and longitude is not None:
+            payload["latitude"] = str(latitude)
+            payload["longitude"] = str(longitude)
+        if justification is not None:
+            payload["justification"] = justification
+        return self._post(f"/appointments/{appointment_id}/status", payload)
+
+    def get_customer(self, customer_id: str | int) -> dict[str, Any]:
+        payload = self._get(f"/customers/{customer_id}")
+        customer = payload.get("customer", payload) if isinstance(payload, dict) else {}
+        return customer if isinstance(customer, dict) else {}
 
     def update_booking_schedule_response(self, booking_id: str, status: str) -> dict[str, Any]:
         return self._post(

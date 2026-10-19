@@ -94,7 +94,14 @@ class LocalEventsAndRetryTest(unittest.TestCase):
             row = conn.execute("SELECT COUNT(*) AS total FROM sync_events WHERE entity_type = 'appointment'").fetchone()
         return row["total"]
 
-    def test_late_15_30_60_are_local_only(self):
+    def notice_events(self):
+        with self.storage.connect() as conn:
+            rows = conn.execute(
+                "SELECT action, request_json FROM sync_events WHERE entity_type = 'appointment' AND action LIKE 'notice:%' AND ok = 1"
+            ).fetchall()
+        return [(row["action"], row["request_json"]) for row in rows]
+
+    def test_late_15_30_60_are_sent_to_77gestao_as_late_with_justification(self):
         for minutes in (15, 30, 60):
             appointment_id = f"appointment-{minutes}"
             self.setup_checkin_pending(appointment_id, f"booking-{minutes}")
@@ -104,11 +111,13 @@ class LocalEventsAndRetryTest(unittest.TestCase):
             appointment = self.storage.get_appointment(appointment_id)
             self.assertEqual(appointment["local_status"], "late_reported")
             self.assertEqual(appointment["late_minutes"], minutes)
-            self.assertTrue(appointment["late_reported_at"])
+            self.assertEqual(appointment["notice"], "late")
+            self.assertEqual(appointment["notice_justification"], f"Atraso de {minutes} minutos")
 
-        self.assertEqual(self.appointment_sync_count(), 0)
+        self.assertEqual(len(self.notice_events()), 3)
+        self.assertTrue(all(action == "notice:late" for action, _ in self.notice_events()))
 
-    def test_duplicate_late_does_not_change_or_sync(self):
+    def test_duplicate_late_is_sent_once(self):
         self.setup_checkin_pending()
 
         self.send_reply(f"late_15:{self.appointment_id}")
@@ -117,11 +126,10 @@ class LocalEventsAndRetryTest(unittest.TestCase):
         second = self.storage.get_appointment(self.appointment_id)
 
         self.assertEqual(second["local_status"], "late_reported")
-        self.assertEqual(second["late_minutes"], 15)
         self.assertEqual(first["late_reported_at"], second["late_reported_at"])
-        self.assertEqual(self.appointment_sync_count(), 0)
+        self.assertEqual(len(self.notice_events()), 1)
 
-    def test_no_show_is_local_only(self):
+    def test_no_show_is_sent_to_77gestao_as_absent_with_reason(self):
         self.setup_checkin_pending()
 
         self.send_reply(f"reason_personal:{self.appointment_id}")
@@ -129,19 +137,16 @@ class LocalEventsAndRetryTest(unittest.TestCase):
         appointment = self.storage.get_appointment(self.appointment_id)
         self.assertEqual(appointment["local_status"], "no_show_reported")
         self.assertEqual(appointment["no_show_reason"], "problema pessoal")
-        self.assertTrue(appointment["no_show_reported_at"])
-        self.assertEqual(self.appointment_sync_count(), 0)
+        self.assertEqual(self.notice_events()[0][0], "notice:absent")
+        self.assertIn("problema pessoal", self.notice_events()[0][1])
 
-    def test_duplicate_no_show_does_not_sync(self):
+    def test_duplicate_no_show_is_sent_once(self):
         self.setup_checkin_pending()
 
         self.send_reply(f"reason_access:{self.appointment_id}")
         self.send_reply(f"reason_access:{self.appointment_id}")
 
-        appointment = self.storage.get_appointment(self.appointment_id)
-        self.assertEqual(appointment["local_status"], "no_show_reported")
-        self.assertEqual(appointment["no_show_reason"], "sem acesso ao local")
-        self.assertEqual(self.appointment_sync_count(), 0)
+        self.assertEqual(len(self.notice_events()), 1)
 
     def test_wrong_appointment_is_rejected(self):
         self.setup_checkin_pending()
@@ -188,6 +193,7 @@ class LocalEventsAndRetryTest(unittest.TestCase):
         self.storage.upsert_booking({"id": 597, "name": "Cooperado Teste", "booking_id": "booking-pending", "phone": self.phone})
         self.storage.update_booking_local_status("booking-pending", "confirmed")
         self.storage.upsert_appointment({"id": "appointment-pending"}, "booking-pending", self.phone, "checked_in")
+        self.storage.save_appointment_checkin_location("appointment-pending", -23.96, -46.33, "Rua Teste, 100")
         client = Mock()
         client.update_booking_schedule_response.return_value = {"ok": True}
         client.update_appointment_status.return_value = {"ok": True}
@@ -208,3 +214,6 @@ class LocalEventsAndRetryTest(unittest.TestCase):
             [("booking-pending", "sent"), ("booking-pending", "confirmed")],
         )
         self.assertEqual(client.update_appointment_status.call_count, 1)
+        # Check-in vai com a localização gravada: a 77Gestão exige as coordenadas.
+        self.assertEqual(client.update_appointment_status.call_args.kwargs["latitude"], "-23.96")
+        self.assertEqual(client.update_appointment_status.call_args.kwargs["longitude"], "-46.33")

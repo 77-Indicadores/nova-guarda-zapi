@@ -235,6 +235,12 @@ def init_db() -> None:
         ensure_column(conn, "appointments", "checkout_latitude", "TEXT")
         ensure_column(conn, "appointments", "checkout_longitude", "TEXT")
         ensure_column(conn, "appointments", "checkout_address", "TEXT")
+        # Aviso de comparecimento (atraso/falta) é independente do check-in:
+        # tem sincronização própria com a 77Gestão.
+        ensure_column(conn, "appointments", "notice", "TEXT")
+        ensure_column(conn, "appointments", "notice_justification", "TEXT")
+        ensure_column(conn, "appointments", "notice_synced", "TEXT")
+        ensure_column(conn, "appointments", "out_of_range_attempts", "INTEGER")
 
 
 SETTING_DEFAULTS = {
@@ -630,7 +636,8 @@ def mark_appointment_location_pending(appointment_id: str | int) -> tuple[bool, 
         current = row["local_status"]
         if current == "location_pending":
             return False, row_to_appointment(row)
-        if current not in {"checkin_pending", "late_reported"}:
+        # Depois de "Não vou" ele ainda pode aparecer: a presença vale mais que o aviso.
+        if current not in {"checkin_pending", "late_reported", "no_show_reported"}:
             raise ValueError(f"Transição inválida: {current} -> location_pending")
         conn.execute(
             "UPDATE appointments SET local_status = 'location_pending', updated_at = ? WHERE appointment_id = ?",
@@ -1452,3 +1459,51 @@ def resolve_open_alerts(kind: str, entity_type: str, entity_id: str | int) -> No
             """,
             (timestamp(), kind, entity_type, str(entity_id)),
         )
+
+
+def set_appointment_notice(appointment_id: str | int, notice: str, justification: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE appointments SET notice = ?, notice_justification = ? WHERE appointment_id = ?",
+            (notice, justification, str(appointment_id)),
+        )
+
+
+def notice_signature(appointment: dict[str, Any]) -> str:
+    return f"{appointment.get('notice') or ''}|{appointment.get('notice_justification') or ''}"
+
+
+def mark_notice_synced(appointment_id: str | int, signature: str) -> None:
+    with connect() as conn:
+        conn.execute("UPDATE appointments SET notice_synced = ? WHERE appointment_id = ?", (signature, str(appointment_id)))
+
+
+def list_pending_notice_syncs() -> list[dict[str, Any]]:
+    init_db()
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM appointments
+            WHERE COALESCE(notice, '') != ''
+              AND SUBSTR(COALESCE(notice_synced, ''), 1, 8) != 'blocked:'
+            ORDER BY updated_at ASC
+            """
+        ).fetchall()
+    appointments = [row_to_appointment(row) for row in rows]
+    return [item for item in appointments if item.get("notice_synced") != notice_signature(item)]
+
+
+def increment_out_of_range_attempts(appointment_id: str | int) -> int:
+    with connect() as conn:
+        conn.execute(
+            """
+            UPDATE appointments
+            SET out_of_range_attempts = COALESCE(out_of_range_attempts, 0) + 1, updated_at = ?
+            WHERE appointment_id = ?
+            """,
+            (timestamp(), str(appointment_id)),
+        )
+        row = conn.execute(
+            "SELECT out_of_range_attempts FROM appointments WHERE appointment_id = ?", (str(appointment_id),)
+        ).fetchone()
+    return int(row["out_of_range_attempts"] or 0) if row else 0

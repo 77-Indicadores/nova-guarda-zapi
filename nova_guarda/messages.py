@@ -175,13 +175,13 @@ def build_checkin_reply(status: str) -> str:
         return (
             "Para concluir o check-in, envie sua localização atual por aqui "
             "(clipe 📎 > Localização > Enviar localização atual). "
-            "O check-in só é registrado depois que a localização chegar."
+            "Você precisa estar no local do atendimento (até 200 m)."
         )
     if status == "checkout_location":
         return (
             "Para concluir o check-out, envie sua localização atual por aqui "
             "(clipe 📎 > Localização > Enviar localização atual). "
-            "O check-out só é registrado depois que a localização chegar."
+            "Você precisa estar no local do atendimento (até 200 m)."
         )
     if status == "location_received":
         return "Localização recebida com sucesso pela Guarda Nova."

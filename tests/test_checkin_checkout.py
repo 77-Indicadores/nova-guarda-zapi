@@ -306,16 +306,180 @@ class CheckinCheckoutFlowTest(unittest.TestCase):
         self.send_reply("checkin_arrived:outro-atendimento")
         self.assertIn("Não encontrei este atendimento", self.last_bot_text())
 
-    def test_arrival_after_no_show_is_explained(self):
+    def test_arrival_after_no_show_is_accepted_and_the_team_is_told(self):
         self.accept_cooperator()
         self.create_booking()
         self.post_checkin_send()
         self.send_reply(f"reason_personal:{self.appointment_id}")
 
         self.send_reply(f"checkin_arrived:{self.appointment_id}")
+        self.assertEqual(self.storage.get_appointment(self.appointment_id)["local_status"], "location_pending")
+        self.send_location()
 
-        self.assertIn("informou que não iria", self.last_bot_text())
-        self.assertEqual(self.storage.get_appointment(self.appointment_id)["local_status"], "no_show_reported")
+        self.assertEqual(self.storage.get_appointment(self.appointment_id)["local_status"], "checked_in")
+        kinds = [alert["kind"] for alert in self.storage.list_alerts()]
+        self.assertEqual(kinds, ["returned_after_no_show"])
+
+    # localização e raio de 200 m da 77Gestão ---------------------------------------
+    def real_77(self, **behaviour):
+        client = Mock()
+        for name, value in behaviour.items():
+            setattr(getattr(client, name), "side_effect" if isinstance(value, (Exception, list)) else "return_value", value)
+        return patch("nova_guarda.gestao77_service.fake_gestao77_enabled", return_value=False), patch(
+            "nova_guarda.gestao77_service.Gestao77Client.from_env", return_value=client
+        ), client
+
+    def out_of_range(self, meters=1001):
+        import requests
+
+        response = requests.Response()
+        response.status_code = 422
+        response._content = (
+            '{"success":false,"message":"Você está a 1,0 km do local do atendimento. Distância máxima permitida: 200 m.",'
+            f'"distance_meters":{meters},"max_distance_meters":200}}'
+        ).encode()
+        return requests.HTTPError("422", response=response)
+
+    def arrive(self):
+        self.accept_cooperator()
+        self.create_booking()
+        self.post_checkin_send()
+        self.send_reply(f"checkin_arrived:{self.appointment_id}")
+
+    def test_checkin_message_shows_the_customer_address_from_77gestao(self):
+        import nova_guarda.gestao77_service as service
+        from nova_guarda.messages import build_checkin_message
+
+        service._CUSTOMER_ADDRESS_CACHE.clear()
+        customer = {
+            "addresses": [
+                {"address": "AVENIDA PRESIDENTE WILSON", "number": "76", "neighborhood": "JOSE MENINO", "city": "SANTOS"}
+            ]
+        }
+        fake, factory, client = self.real_77(get_customer=customer)
+        with fake, factory:
+            data = service.agenda_data_from_booking(
+                {"payload": {"name": "Cooperado"}}, {"id": "1", "customer_id": 7957, "start_at": "2026-10-08T16:00:00Z"}
+            )
+            service.agenda_data_from_booking({"payload": {}}, {"id": "2", "customer_id": 7957})
+
+        self.assertIn("Endereço: Avenida Presidente Wilson, 76 - Jose Menino, Santos", build_checkin_message(data))
+        client.get_customer.assert_called_once_with("7957")
+
+    def test_checkin_sends_coordinates_and_77gestao_accepts(self):
+        self.arrive()
+        fake, factory, client = self.real_77(update_appointment_status={"success": True})
+        with fake, factory:
+            self.send_location()
+
+        kwargs = client.update_appointment_status.call_args.kwargs
+        self.assertEqual((kwargs["latitude"], kwargs["longitude"]), (-23.96, -46.33))
+        appointment = self.storage.get_appointment(self.appointment_id)
+        self.assertEqual((appointment["local_status"], appointment["gestao77_status"]), ("checked_in", "checked_in"))
+
+    def test_checkin_outside_200m_is_not_registered_and_explains_the_distance(self):
+        self.arrive()
+        fake, factory, client = self.real_77(update_appointment_status=self.out_of_range())
+        with fake, factory:
+            self.send_location()
+
+        appointment = self.storage.get_appointment(self.appointment_id)
+        self.assertEqual(appointment["local_status"], "location_pending")
+        self.assertIsNone(appointment["checked_in_at"])
+        reply = self.last_bot_text()
+        self.assertIn("1,0 km do local do atendimento", reply)
+        self.assertIn("envie sua localização atual de novo", reply)
+        self.assertEqual(self.storage.list_alerts(), [])
+
+    def test_three_tries_outside_200m_alert_the_team_and_a_later_try_inside_works(self):
+        self.arrive()
+        fake, factory, client = self.real_77(
+            update_appointment_status=[self.out_of_range(), self.out_of_range(), self.out_of_range(), {"success": True}]
+        )
+        with fake, factory:
+            for _ in range(3):
+                self.send_location()
+            self.assertEqual([alert["kind"] for alert in self.storage.list_alerts()], ["out_of_range"])
+            self.assertIn("3 vezes fora do local", self.storage.list_alerts()[0]["message"])
+            self.send_location()
+
+        self.assertEqual(self.storage.get_appointment(self.appointment_id)["local_status"], "checked_in")
+        self.assertEqual(self.storage.auto_resolve_alerts(), 1)
+
+    def test_checkout_also_needs_to_be_inside_200m(self):
+        self.arrive()
+        self.send_location()
+        self.post_checkout_send()
+        self.send_reply(f"checkout_confirm:{self.appointment_id}")
+        fake, factory, client = self.real_77(update_appointment_status=self.out_of_range(250))
+        with fake, factory:
+            self.send_location()
+
+        self.assertEqual(self.storage.get_appointment(self.appointment_id)["local_status"], "checkout_location_pending")
+        self.assertIn("Para registrar o check-out", self.last_bot_text())
+
+    def test_77gestao_down_registers_here_and_resends_with_the_location(self):
+        import requests
+
+        self.arrive()
+        fake, factory, client = self.real_77(update_appointment_status=requests.ConnectionError("77 fora"))
+        with fake, factory:
+            self.send_location()
+        appointment = self.storage.get_appointment(self.appointment_id)
+        self.assertEqual(appointment["local_status"], "checked_in")
+        self.assertIsNone(appointment["gestao77_status"])
+
+        from nova_guarda.gestao77_service import retry_pending_gestao77_syncs
+
+        fake, factory, client = self.real_77(update_appointment_status={"success": True})
+        with fake, factory:
+            retry_pending_gestao77_syncs()
+        self.assertEqual(client.update_appointment_status.call_args.kwargs["latitude"], "-23.96")
+        self.assertEqual(self.storage.get_appointment(self.appointment_id)["gestao77_status"], "checked_in")
+
+    def test_resend_refused_by_distance_becomes_a_team_alert(self):
+        import requests
+
+        self.arrive()
+        fake, factory, client = self.real_77(update_appointment_status=requests.ConnectionError("77 fora"))
+        with fake, factory:
+            self.send_location()
+
+        from nova_guarda.gestao77_service import retry_pending_gestao77_syncs
+
+        fake, factory, client = self.real_77(update_appointment_status=self.out_of_range())
+        with fake, factory:
+            retry_pending_gestao77_syncs()
+
+        self.assertEqual(self.storage.get_appointment(self.appointment_id)["gestao77_status"], "blocked:checked_in")
+        alert = self.storage.list_alerts()[0]
+        self.assertEqual(alert["kind"], "sync_rejected")
+        self.assertIn("registrado no bot, mas a 77Gestão não aceitou", alert["message"])
+
+    def test_old_checkin_without_location_becomes_a_team_alert(self):
+        from nova_guarda.gestao77_service import retry_pending_gestao77_syncs
+
+        self.accept_cooperator()
+        self.create_booking()
+        self.storage.upsert_appointment({"id": self.appointment_id}, self.booking_id, self.phone, "checked_in")
+        fake, factory, client = self.real_77()
+        with fake, factory:
+            retry_pending_gestao77_syncs()
+
+        client.update_appointment_status.assert_not_called()
+        self.assertIn("exige latitude e longitude", self.storage.list_alerts()[0]["message"])
+
+    def test_late_notice_goes_with_justification_and_is_updated(self):
+        self.accept_cooperator()
+        self.create_booking()
+        self.post_checkin_send()
+        fake, factory, client = self.real_77(update_appointment_status={"success": True})
+        with fake, factory:
+            self.send_reply(f"late_60:{self.appointment_id}")
+            self.send_reply(f"late_15:{self.appointment_id}")
+
+        calls = [(call.args[1], call.kwargs.get("justification")) for call in client.update_appointment_status.call_args_list]
+        self.assertEqual(calls, [("late", "Atraso de 60 minutos"), ("late", "Atraso de 15 minutos")])
 
     def test_changing_the_delay_replaces_the_late_alert(self):
         self.accept_cooperator()

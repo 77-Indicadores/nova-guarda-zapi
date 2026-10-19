@@ -480,6 +480,13 @@ def handle_webhook_payload(payload: dict) -> None:
 
             if reply_status == "presence_sync_error":
                 reply = "Não consegui registrar sua presença agora. Fale com a equipe da Guarda Nova."
+            elif sync_result is not None and sync_result.get("status") == "out_of_range":
+                reply_status = "out_of_range"
+                reply = (
+                    f"{sync_result['message']}\n\n"
+                    f"Para registrar o {sync_result['step']}, vá até o local do atendimento "
+                    "e envie sua localização atual de novo."
+                )
             elif sync_result is None:
                 reply_status = "location_ignored"
                 reply = "Recebemos sua localização, mas não há check-in nem check-out aguardando localização neste momento."

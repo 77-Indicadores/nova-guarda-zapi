@@ -50,6 +50,12 @@ from nova_guarda.storage import (
     mark_booking_synced,
     mark_booking_whatsapp_sent,
     mark_sync_blocked,
+    increment_out_of_range_attempts,
+    list_pending_notice_syncs,
+    mark_notice_synced,
+    notice_signature,
+    resolve_open_alerts,
+    set_appointment_notice,
     save_sync_event,
     transition_booking_response,
     transition_appointment_checkin,
@@ -194,8 +200,45 @@ def _post_booking_status(client: Gestao77Client, booking_id: int | str, status: 
         return {"status": "success", "idempotent": True, "remote_status": remote}
 
 
-def update_appointment_status(appointment_id: int | str, status: str, address: str = "") -> dict[str, Any]:
-    request_payload = {"status": status, "address": address}
+class OutOfRangeError(Exception):
+    """A 77Gestão recusou check-in/check-out porque o cooperado está fora do
+    raio permitido do local do atendimento (hoje, 200 m)."""
+
+    def __init__(self, message: str, distance_meters: int | None = None, max_distance_meters: int | None = None):
+        super().__init__(message)
+        self.message = message
+        self.distance_meters = distance_meters
+        self.max_distance_meters = max_distance_meters
+
+
+def _out_of_range(exc: Exception) -> OutOfRangeError | None:
+    response = getattr(exc, "response", None)
+    if response is None or response.status_code != 422:
+        return None
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict) or body.get("distance_meters") is None:
+        return None
+    return OutOfRangeError(
+        str(body.get("message") or "Você está fora do local do atendimento."),
+        body.get("distance_meters"),
+        body.get("max_distance_meters"),
+    )
+
+
+def update_appointment_status(
+    appointment_id: int | str,
+    status: str,
+    address: str = "",
+    latitude: Any = None,
+    longitude: Any = None,
+) -> dict[str, Any]:
+    """Envia check-in/check-out para a 77Gestão com a localização do
+    cooperado. Fora do raio permitido levanta OutOfRangeError, que não é
+    divergência: o cooperado ainda não está no local."""
+    request_payload = {"status": status, "address": address, "latitude": latitude, "longitude": longitude}
     if fake_gestao77_enabled():
         response = {"ok": True, "fake": True, "appointment_id": str(appointment_id), "status": status, "address": address}
         mark_appointment_synced(appointment_id, status)
@@ -203,10 +246,17 @@ def update_appointment_status(appointment_id: int | str, status: str, address: s
         return response
 
     try:
+        if latitude is None or longitude is None:
+            raise MissingLocationError("Sem localização gravada: a 77Gestão exige latitude e longitude no check-in/check-out.")
         client = Gestao77Client.from_env()
         try:
-            response = client.update_appointment_status(str(appointment_id), status, address)
+            response = client.update_appointment_status(
+                str(appointment_id), status, address, latitude=latitude, longitude=longitude
+            )
         except requests.HTTPError as exc:
+            out_of_range = _out_of_range(exc)
+            if out_of_range:
+                raise out_of_range from exc
             # Recusa de um envio repetido: se a 77Gestão já tem esse check-in/out, está sincronizado.
             if not _is_rejected_transition(exc):
                 raise
@@ -217,10 +267,54 @@ def update_appointment_status(appointment_id: int | str, status: str, address: s
         mark_appointment_synced(appointment_id, status)
         save_sync_event("appointment", appointment_id, f"status:{status}", True, request_payload, response)
         return response
+    except OutOfRangeError as exc:
+        save_sync_event("appointment", appointment_id, f"status:{status}", False, request_payload, error=exc.message)
+        raise
     except Exception as exc:
         save_sync_event("appointment", appointment_id, f"status:{status}", False, request_payload, error=str(exc))
         block_rejected_sync("appointment", appointment_id, status, exc)
         raise
+
+
+class MissingLocationError(RuntimeError):
+    pass
+
+
+def sync_attendance_notice(appointment_id: int | str) -> dict[str, Any]:
+    """Envia o aviso de atraso (late) ou de falta (absent) com a justificativa.
+    É independente do check-in: o cooperado que avisou atraso ainda faz check-in."""
+    appointment = get_appointment(appointment_id)
+    if not appointment or not appointment.get("notice"):
+        return {"ok": True, "skipped": True}
+    notice = appointment["notice"]
+    justification = str(appointment.get("notice_justification") or "")
+    signature = notice_signature(appointment)
+    request_payload = {"status": notice, "justification": justification}
+    if fake_gestao77_enabled():
+        mark_notice_synced(appointment_id, signature)
+        save_sync_event("appointment", appointment_id, f"notice:{notice}", True, request_payload, {"ok": True, "fake": True})
+        return {"ok": True, "fake": True}
+    try:
+        response = Gestao77Client.from_env().update_appointment_status(
+            str(appointment_id), notice, "", justification=justification
+        )
+    except Exception as exc:
+        save_sync_event("appointment", appointment_id, f"notice:{notice}", False, request_payload, error=str(exc))
+        if _is_rejected_transition(exc):
+            # Ex.: aviso depois do check-in, ou atraso depois de falta: a 77Gestão não aceita, repetir não resolve.
+            mark_notice_synced(appointment_id, f"blocked:{signature}")
+            raise_alert(
+                "sync_rejected",
+                "appointment",
+                appointment_id,
+                appointment.get("phone", ""),
+                f"Atendimento {appointment_id}: a 77Gestão recusou o aviso de {'atraso' if notice == 'late' else 'falta'}. "
+                f"Detalhe: {str(exc)[-200:]}",
+            )
+        raise
+    mark_notice_synced(appointment_id, signature)
+    save_sync_event("appointment", appointment_id, f"notice:{notice}", True, request_payload, response)
+    return response
 
 
 def block_rejected_sync(entity_type: str, entity_id: int | str, status: str, exc: Exception) -> None:
@@ -435,6 +529,15 @@ def request_checkin_location(phone: str, status: str) -> dict[str, Any]:
     if not appointment or normalize_phone(appointment.get("phone", "")) != phone:
         raise PermissionError("Check-in não pertence a um appointment deste telefone.")
     changed, stored = mark_appointment_location_pending(appointment_id)
+    if changed and appointment.get("local_status") == "no_show_reported":
+        resolve_open_alerts("no_show", "appointment", appointment_id)
+        raise_alert(
+            "returned_after_no_show",
+            "appointment",
+            appointment_id,
+            phone,
+            f"{phone} tinha dito que não iria ao atendimento {appointment_id}, mas avisou que chegou.",
+        )
     return {
         "appointment_id": str(appointment_id),
         "booking_id": stored.get("booking_id", ""),
@@ -444,19 +547,58 @@ def request_checkin_location(phone: str, status: str) -> dict[str, Any]:
     }
 
 
+OUT_OF_RANGE_ALERT_ATTEMPTS = 3
+
+
 def sync_checkin_location_for_phone(phone: str, latitude: Any, longitude: Any, address: str) -> dict[str, Any] | None:
-    """Conclui o check-in do appointment que aguarda localização. Retorna None
-    quando o telefone não tem check-in aguardando localização."""
+    """Conclui o check-in/check-out que aguarda localização. A 77Gestão decide
+    pela distância: fora do raio nada é registrado e o cooperado tenta de novo.
+    Se ela estiver indisponível, registra aqui e a sincronização é refeita
+    depois (com a localização gravada). Retorna None quando nada aguarda
+    localização."""
     phone = normalize_phone(phone)
     appointment = get_appointment_awaiting_location(phone)
     if not appointment:
         return None
     appointment_id = appointment["appointment_id"]
-    if appointment.get("local_status") == "checkout_location_pending":
+    checkout = appointment.get("local_status") == "checkout_location_pending"
+    status = "checked_out" if checkout else "checked_in"
+    try:
+        update_appointment_status(appointment_id, status, address, latitude=latitude, longitude=longitude)
+    except OutOfRangeError as exc:
+        attempts = increment_out_of_range_attempts(appointment_id)
+        if attempts == OUT_OF_RANGE_ALERT_ATTEMPTS:
+            raise_alert(
+                "out_of_range",
+                "appointment",
+                appointment_id,
+                phone,
+                f"{phone} tentou o {'check-out' if checkout else 'check-in'} do atendimento {appointment_id} "
+                f"{attempts} vezes fora do local. {exc.message}",
+                appointment.get("local_status", ""),
+            )
+        return {
+            "appointment_id": str(appointment_id),
+            "status": "out_of_range",
+            "step": "check-out" if checkout else "check-in",
+            "message": exc.message,
+            "distance_meters": exc.distance_meters,
+            "attempts": attempts,
+        }
+    except Exception:  # noqa: BLE001 - 77Gestão indisponível: registra aqui e reenvia depois
+        pass
+    if checkout:
         save_appointment_checkout_location(appointment_id, latitude, longitude, address)
-        return sync_appointment_checkout(appointment_id, address=address, event_id="location")
-    save_appointment_checkin_location(appointment_id, latitude, longitude, address)
-    return sync_appointment_checkin(appointment_id, address=address, event_id="location")
+        changed, stored = transition_appointment_checkout(appointment_id, "location")
+    else:
+        save_appointment_checkin_location(appointment_id, latitude, longitude, address)
+        changed, stored = transition_appointment_checkin(appointment_id, "location")
+    return {
+        "appointment_id": str(appointment_id),
+        "status": status,
+        "idempotent": not changed,
+        "gestao77_synced": stored.get("gestao77_status") == status,
+    }
 
 
 def request_checkout_location(phone: str, status: str) -> dict[str, Any]:
@@ -634,6 +776,9 @@ def record_local_late(phone: str, status: str) -> dict[str, Any]:
     if not appointment or normalize_phone(appointment.get("phone", "")) != phone:
         raise PermissionError("Evento de atraso não pertence ao appointment atual.")
     changed, stored = mark_appointment_late(appointment_id, minutes, status)
+    if changed:
+        set_appointment_notice(appointment_id, "late", f"Atraso de {minutes} minutos")
+        _safe_gestao77_sync(sync_attendance_notice, appointment_id)
     return {
         "appointment_id": appointment_id,
         "booking_id": stored.get("booking_id", ""),
@@ -655,6 +800,9 @@ def record_local_no_show(phone: str, status: str) -> dict[str, Any]:
     if not appointment or normalize_phone(appointment.get("phone", "")) != phone:
         raise PermissionError("Evento de não comparecimento não pertence ao appointment atual.")
     changed, stored = mark_appointment_no_show(appointment_id, reason, status)
+    if changed:
+        set_appointment_notice(appointment_id, "absent", f"Não vou: {reason}")
+        _safe_gestao77_sync(sync_attendance_notice, appointment_id)
     return {
         "appointment_id": appointment_id,
         "booking_id": stored.get("booking_id", ""),
@@ -687,12 +835,39 @@ def retry_pending_gestao77_syncs() -> dict[str, Any]:
     for appointment in list_pending_appointment_syncs() + list_blocked_syncs("appointment", recheck_before):
         appointment_id = appointment["appointment_id"]
         status = appointment["local_status"]
+        prefix = "checkin" if status == "checked_in" else "checkout"
         try:
-            address = str(appointment.get("checkin_address" if status == "checked_in" else "checkout_address") or "")
-            response = update_appointment_status(appointment_id, status, address)
+            response = update_appointment_status(
+                appointment_id,
+                status,
+                str(appointment.get(f"{prefix}_address") or ""),
+                latitude=appointment.get(f"{prefix}_latitude"),
+                longitude=appointment.get(f"{prefix}_longitude"),
+            )
             results.append({"entity_type": "appointment", "entity_id": appointment_id, "status": status, "ok": True, "response": response})
+        except (OutOfRangeError, MissingLocationError) as exc:
+            # Registrado aqui com a 77Gestão fora do ar e recusado depois (ou
+            # anterior à localização obrigatória): vira divergência para a equipe.
+            mark_sync_blocked("appointment", appointment_id, status)
+            raise_alert(
+                "sync_rejected",
+                "appointment",
+                appointment_id,
+                appointment.get("phone", ""),
+                f"Atendimento {appointment_id}: {'check-in' if status == 'checked_in' else 'check-out'} registrado no bot, "
+                f"mas a 77Gestão não aceitou. {getattr(exc, 'message', str(exc))}",
+            )
+            results.append({"entity_type": "appointment", "entity_id": appointment_id, "status": status, "ok": False, "error": str(exc)})
         except Exception as exc:
             results.append({"entity_type": "appointment", "entity_id": appointment_id, "status": status, "ok": False, "error": str(exc)})
+
+    for appointment in list_pending_notice_syncs():
+        appointment_id = appointment["appointment_id"]
+        try:
+            response = sync_attendance_notice(appointment_id)
+            results.append({"entity_type": "appointment", "entity_id": appointment_id, "status": appointment["notice"], "ok": True, "response": response})
+        except Exception as exc:
+            results.append({"entity_type": "appointment", "entity_id": appointment_id, "status": appointment["notice"], "ok": False, "error": str(exc)})
 
     return {"ok": all(item["ok"] for item in results), "results": results}
 
@@ -734,6 +909,33 @@ def no_show_reason_from_status(status: str) -> str:
     }.get(prefix, "")
 
 
+CUSTOMER_ADDRESS_TTL_SECONDS = 3600
+_CUSTOMER_ADDRESS_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def customer_address(customer_id: Any) -> str:
+    """Endereço do local do atendimento (cadastro do cliente na 77Gestão; o
+    atendimento em si não traz endereço). Em cache por uma hora."""
+    customer_id = str(customer_id or "").strip()
+    if not customer_id or fake_gestao77_enabled():
+        return ""
+    now = br_now().timestamp()
+    cached = _CUSTOMER_ADDRESS_CACHE.get(customer_id)
+    if cached and now - cached[0] < CUSTOMER_ADDRESS_TTL_SECONDS:
+        return cached[1]
+    try:
+        customer = Gestao77Client.from_env().get_customer(customer_id)
+    except (RuntimeError, requests.RequestException, ValueError):
+        return cached[1] if cached else ""
+    addresses = customer.get("addresses") if isinstance(customer.get("addresses"), list) else []
+    first = next((item for item in addresses if isinstance(item, dict)), {})
+    street = ", ".join(part for part in (str(first.get("address") or "").strip(), str(first.get("number") or "").strip()) if part)
+    place = ", ".join(part for part in (str(first.get("neighborhood") or "").strip(), str(first.get("city") or "").strip()) if part)
+    address = " - ".join(part for part in (street, place) if part).title()
+    _CUSTOMER_ADDRESS_CACHE[customer_id] = (now, address)
+    return address
+
+
 def agenda_data_from_booking(booking: dict[str, Any], appointment: dict[str, Any] | None = None) -> dict[str, str]:
     payload = booking.get("payload") or {}
     appointments = payload.get("appointments") if isinstance(payload.get("appointments"), list) else []
@@ -743,7 +945,12 @@ def agenda_data_from_booking(booking: dict[str, Any], appointment: dict[str, Any
     customer = appointment.get("customer") if isinstance(appointment.get("customer"), dict) else {}
     return {
         "client_name": str(payload.get("name") or booking.get("partner_name") or "Cooperado").strip(),
-        "client_address": str(payload.get("address") or payload.get("client_address") or "").strip(),
+        "client_address": str(
+            payload.get("address")
+            or payload.get("client_address")
+            or customer_address(appointment.get("customer_id") or customer.get("id"))
+            or ""
+        ).strip(),
         "schedule_date": str(payload.get("date") or payload.get("schedule_date") or appointment.get("start_at") or "").strip(),
         "schedule_time": str(payload.get("time") or payload.get("schedule_time") or "").strip(),
         "schedule_end": str(appointment.get("end_at") or "").strip(),
