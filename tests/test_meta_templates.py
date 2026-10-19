@@ -224,6 +224,27 @@ class MetaTemplatesTest(unittest.TestCase):
         self.assertEqual(self.template(self.sent[0])["name"], "nova_guarda_ativacao_termo")
         self.assertEqual(self.button_payloads(self.sent[0]), ["terms_accept", "terms_reject"])
 
+    def test_checkout_inside_the_window_skips_the_template(self):
+        from nova_guarda.gestao77_service import agenda_data_from_booking, send_checkin_to_partner, send_checkout_to_partner
+        from nova_guarda.timezone import br_timestamp
+
+        self.accept_cooperator()
+        self.create_booking()
+        self.storage.update_booking_local_status("880", "confirmed")
+        send_checkin_to_partner("9001", self.phone, agenda_data_from_booking(self.storage.get_booking("880")), booking_id="880")
+        self.storage.mark_appointment_location_pending("9001")
+        self.storage.transition_appointment_checkin("9001")
+        # A localização do check-in é uma mensagem do cooperado: abre a janela de 24h.
+        self.storage.save_conversation_event(
+            {"received_at": br_timestamp(), "payload": {"type": "ReceivedCallback", "phone": self.phone}}
+        )
+
+        send_checkout_to_partner("9001", self.phone)
+
+        checkout = self.sent[-1]
+        self.assertEqual(checkout["type"], "interactive")
+        self.assertEqual(checkout["interactive"]["action"]["buttons"][0]["reply"]["id"], "checkout_confirm:9001")
+
     def test_terms_inside_window_keep_pdf_and_buttons(self):
         from nova_guarda.onboarding import send_terms_to_phone
         from nova_guarda.timezone import br_timestamp

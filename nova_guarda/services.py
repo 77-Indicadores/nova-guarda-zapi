@@ -122,8 +122,15 @@ def schedule_template_parameters(agenda_data: dict[str, str], with_address: bool
     return parameters + [date_text, time_text, template_text(agenda_data.get("service"), "Atendimento Guarda Nova")]
 
 
-def terms_template_required(phone: str) -> bool:
+def template_needed(phone: str) -> bool:
+    """Regra única dos templates: só quando a janela de 24h está fechada. Com
+    o cooperado tendo escrito nas últimas 24h, vai mensagem comum (mais rica:
+    PDF, botões e texto completos) e não depende de template aprovado."""
     return meta_templates_enabled() and not is_simulated_phone(phone) and not whatsapp_window_open(phone)
+
+
+def terms_template_required(phone: str) -> bool:
+    return template_needed(phone)
 
 
 def send_terms_template(phone: str, name: str) -> dict[str, Any]:
@@ -204,7 +211,7 @@ def send_zapi_agenda_buttons(
     if DEV_FAKE_ZAPI or is_simulated_phone(phone):
         return fake_zapi_response("send-button-list", phone, {"message": message, "buttons": buttons})
 
-    if agenda_data is not None and meta_templates_enabled():
+    if agenda_data is not None and template_needed(phone):
         return send_meta_template(
             phone,
             WHATSAPP_TEMPLATE_BOOKING,
@@ -244,7 +251,7 @@ def send_zapi_schedule(
     client = whatsapp_client()
     if isinstance(client, WhatsAppOfficialClient):
         media_id = client.upload_media(pdf_content, file_name) if pdf_content else ""
-        if meta_templates_enabled():
+        if template_needed(phone):
             period = template_text(schedule_data.get("schedule_period"))
             days = int(schedule_data.get("schedule_days") or 0)
             span = f"{days} dia(s), de {schedule_data.get('schedule_first')} a {schedule_data.get('schedule_last')}"
@@ -316,7 +323,7 @@ def send_zapi_checkin_options(
     if DEV_FAKE_ZAPI or is_simulated_phone(phone):
         return fake_zapi_response("send-option-list", phone, {"message": message, "options": options})
 
-    if agenda_data is not None and meta_templates_enabled():
+    if agenda_data is not None and template_needed(phone):
         return send_meta_template(
             phone,
             WHATSAPP_TEMPLATE_CHECKIN,
@@ -360,7 +367,7 @@ def send_zapi_checkout_button(
     if DEV_FAKE_ZAPI or is_simulated_phone(phone):
         return fake_zapi_response("send-button-list", phone, {"message": message, "buttons": buttons})
 
-    if agenda_data is not None and meta_templates_enabled():
+    if agenda_data is not None and template_needed(phone):
         return send_meta_template(
             phone,
             WHATSAPP_TEMPLATE_CHECKOUT,
