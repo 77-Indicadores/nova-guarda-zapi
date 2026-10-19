@@ -1,11 +1,9 @@
 import os
-from pathlib import Path
 from typing import Any
 
 import requests
 
 from nova_guarda.config import (
-    TERMS_DOCUMENT_URL,
     WHATSAPP_OFFICIAL_BASE_URL,
     WHATSAPP_OFFICIAL_PHONE_NUMBER_ID,
     WHATSAPP_OFFICIAL_TOKEN,
@@ -33,23 +31,13 @@ class WhatsAppOfficialClient:
             }
         )
 
-    def send_document_pdf(self, phone: str, document_path: Path, file_name: str, caption: str) -> dict[str, Any]:
-        document_url = os.getenv("TERMS_DOCUMENT_URL", TERMS_DOCUMENT_URL).strip()
-        if not document_url:
-            raise RuntimeError(
-                "Configure TERMS_DOCUMENT_URL com uma URL pública do PDF para enviar documentos pela Cloud API."
-            )
-
+    def send_document_media(self, phone: str, media_id: str, file_name: str, caption: str) -> dict[str, Any]:
         return self._post(
             {
                 "messaging_product": "whatsapp",
                 "to": phone,
                 "type": "document",
-                "document": {
-                    "link": document_url,
-                    "filename": file_name,
-                    "caption": caption,
-                },
+                "document": {"id": media_id, "filename": file_name, "caption": caption},
             }
         )
 

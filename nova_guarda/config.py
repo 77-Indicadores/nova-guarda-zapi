@@ -12,7 +12,6 @@ WHATSAPP_OFFICIAL_PHONE_NUMBER_ID = os.getenv("WHATSAPP_OFFICIAL_PHONE_NUMBER_ID
 WHATSAPP_OFFICIAL_TOKEN = os.getenv("WHATSAPP_OFFICIAL_TOKEN", "").strip()
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "").strip()
 WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "").strip()
-TERMS_DOCUMENT_URL = os.getenv("TERMS_DOCUMENT_URL", "").strip()
 # Templates aprovados na Meta, usados para iniciar conversa fora da janela de 24h.
 WHATSAPP_TEMPLATE_LANGUAGE = os.getenv("WHATSAPP_TEMPLATE_LANGUAGE", "pt_BR").strip()
 WHATSAPP_TEMPLATE_TERMS = os.getenv("WHATSAPP_TEMPLATE_TERMS", "nova_guarda_ativacao_termo").strip()
@@ -27,7 +26,6 @@ PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = PACKAGE_DIR.parent
 LOCAL_NGROK_PATH = PROJECT_DIR / "ngrok.exe"
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", DEFAULT_PUBLIC_BASE_URL).strip().rstrip("/")
-TERMS_PDF_PATH = Path(os.getenv("TERMS_PDF_PATH", PROJECT_DIR / "termo_uso_consentimento_nova_guarda.pdf"))
 DATABASE_PATH = Path(os.getenv("DATABASE_PATH", PROJECT_DIR / "nova_guarda.sqlite3"))
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 DEV_FAKE_ZAPI = os.getenv("DEV_FAKE_ZAPI", "false").strip().lower() in {"1", "true", "yes", "sim"}

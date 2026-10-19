@@ -253,10 +253,15 @@ class MetaTemplatesTest(unittest.TestCase):
             {"received_at": br_timestamp(), "payload": {"type": "ReceivedCallback", "phone": self.phone}}
         )
 
-        with patch.dict(os.environ, {"TERMS_DOCUMENT_URL": "https://example.test/termo.pdf"}):
+        with patch(
+            "nova_guarda.clients.whatsapp_official.WhatsAppOfficialClient.upload_media", return_value="media-termo"
+        ) as upload:
             send_terms_to_phone(self.phone, {"id": 597, "name": "Cooperado Teste", "active": 1})
 
         self.assertEqual([message["type"] for message in self.sent], ["text", "document", "interactive"])
+        # O termo vai como mídia enviada para a Meta: o PDF gerado pelo app, sem link externo.
+        self.assertTrue(upload.call_args.args[0].startswith(b"%PDF"))
+        self.assertEqual(self.sent[1]["document"]["id"], "media-termo")
 
     def test_templates_disabled_keeps_interactive_messages(self):
         from nova_guarda.gestao77_service import send_booking_to_partner

@@ -114,6 +114,7 @@ PUBLIC_ENDPOINTS = {
     "login",
     "login_post",
     "policy",
+    "terms_pdf",
     "healthcheck",
     "webhook",
     "verify_webhook",
@@ -1210,6 +1211,16 @@ def create_app() -> Flask:
         removidos = ", ".join(f"{k}: {v}" for k, v in counts.items() if v)
         flash(f"Dados de teste resetados para {phone}." + (f" ({removidos})" if removidos else " (nada para apagar)"))
         return redirect(url_for("configuracoes"))
+
+    @app.get("/termo.pdf")
+    def terms_pdf():
+        from nova_guarda.terms_pdf import TERMS_FILE_NAME, build_terms_pdf
+
+        return Response(
+            build_terms_pdf(),
+            mimetype="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{TERMS_FILE_NAME}"'},
+        )
 
     @app.get("/policy")
     def policy():

@@ -579,6 +579,18 @@ class SelfHealingFlowTest(unittest.TestCase):
         self.assertIn("77 fora", result["gestao77_error"])
         self.assertEqual([item["action"] for item in result["followups"]], ["reminder"])
 
+    def test_terms_pdf_says_guarda_nova_and_is_public(self):
+        self.client.post("/logout")
+        response = self.client.get("/termo.pdf")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/pdf")
+        text = self.pdf_text(response.data).encode("latin-1").decode("latin-1")
+        self.assertIn("Guarda Nova", text)
+        self.assertNotIn("Nova Guarda", text)
+        self.assertNotIn("Minuta", text)
+        self.assertIn("12. Declaração de aceite", text)
+
     # 6. mês seguinte ------------------------------------------------------------
     def test_cycle_also_imports_next_month_bookings(self):
         from nova_guarda.timezone import br_now

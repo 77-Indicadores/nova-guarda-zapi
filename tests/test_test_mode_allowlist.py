@@ -256,7 +256,7 @@ class TestModeAllowlistTest(unittest.TestCase):
         self.enable_test_mode([phone])
         self.use_real_provider_that_must_not_be_called()
 
-        with patch.dict(os.environ, {"TERMS_DOCUMENT_URL": "https://example.test/termo.pdf"}):
+        with patch("nova_guarda.clients.whatsapp_official.WhatsAppOfficialClient.upload_media", return_value="media-1"):
             send_terms_to_phone(phone, {"id": 1, "name": "Novo", "active": 1})
 
         self.assertTrue(self.whatsapp_calls)

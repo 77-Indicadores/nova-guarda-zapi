@@ -2,13 +2,11 @@ import logging
 import os
 import uuid
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any
 
 from nova_guarda.clients import WhatsAppOfficialClient, ZapiClient
 from nova_guarda.config import (
     DEV_FAKE_ZAPI,
-    TERMS_PDF_PATH,
     WHATSAPP_TEMPLATE_BOOKING,
     WHATSAPP_TEMPLATE_CHECKIN,
     WHATSAPP_TEMPLATE_CHECKOUT,
@@ -179,20 +177,21 @@ def send_zapi_text(phone: str, message: str) -> dict[str, Any]:
     return payload
 
 
-def send_zapi_document(phone: str, document_path: Path, caption: str) -> dict[str, Any]:
+def send_zapi_document(phone: str, content: bytes, file_name: str, caption: str, public_path: str = "") -> dict[str, Any]:
+    """Envia um PDF gerado pelo app. Na Cloud API o arquivo é enviado para a
+    Meta (id de mídia), sem depender de link público."""
     if DEV_FAKE_ZAPI or is_simulated_phone(phone):
         return fake_zapi_response(
             "send-document/pdf",
             phone,
-            {"fileName": "Termo de Aceite - Guarda Nova.pdf", "caption": caption},
+            {"fileName": file_name, "caption": caption, "document_url": public_path},
         )
 
-    payload = whatsapp_client().send_document_pdf(
-        phone,
-        document_path,
-        "Termo de Aceite - Guarda Nova.pdf",
-        caption,
-    )
+    client = whatsapp_client()
+    if isinstance(client, WhatsAppOfficialClient):
+        payload = client.send_document_media(phone, client.upload_media(content, file_name), file_name, caption)
+    else:
+        payload = client.send_document_pdf_bytes(phone, content, file_name, caption)
     logger.info("Resposta envio documento WhatsApp (%s): %s", whatsapp_provider(), payload)
     return payload
 
@@ -436,7 +435,9 @@ def send_zapi_no_show_reasons(phone: str, appointment_id: str = "") -> dict[str,
 
 
 def send_terms_document(phone: str, message: str) -> dict[str, Any]:
-    return send_zapi_document(phone, TERMS_PDF_PATH, message)
+    from nova_guarda.terms_pdf import TERMS_FILE_NAME, build_terms_pdf
+
+    return send_zapi_document(phone, build_terms_pdf(), TERMS_FILE_NAME, message, public_path="/termo.pdf")
 
 
 def fake_zapi_response(endpoint: str, phone: str, payload: dict[str, Any]) -> dict[str, Any]:
