@@ -233,10 +233,37 @@ def run_stale_sweep(settings: dict[str, str], now: datetime) -> list[dict[str, A
                 since = max(since, start_at) if since and start_at else since
             elif status == "late_reported":
                 wait += timedelta(minutes=int(appointment.get("late_minutes") or 0))
-            item = follow_up("appointment", appointment["appointment_id"], appointment, since, wait, now)
+            payload = appointment.get("payload") or {}
+            shift_end = parse_br_datetime(payload.get("end_at") or payload.get("ends_at"))
+            if status in SHIFT_BOUND_STATUSES and shift_end and now > shift_end:
+                # Turno já encerrado: lembrar o cooperado de chegar não faz sentido;
+                # a equipe é avisada direto.
+                item = alert_ended_shift(appointment, status)
+            else:
+                item = follow_up("appointment", appointment["appointment_id"], appointment, since, wait, now)
             if item:
                 results.append(item)
     return results
+
+
+SHIFT_BOUND_STATUSES = {"checkin_pending", "late_reported", "location_pending"}
+ENDED_SHIFT_MESSAGES = {
+    "checkin_pending": "Atendimento {appointment_id} terminou sem check-in de {phone} (possível falta).",
+    "late_reported": "{phone} avisou atraso no atendimento {appointment_id}, e o turno terminou sem check-in.",
+    "location_pending": "{phone} disse que chegou ao atendimento {appointment_id}, mas o turno terminou sem a localização.",
+}
+
+
+def alert_ended_shift(appointment: dict[str, Any], status: str) -> dict[str, Any] | None:
+    phone = normalize_phone(str(appointment.get("phone") or ""))
+    entity_id = appointment["appointment_id"]
+    if not mode_allows_phone(phone) or appointment.get("alert_status") == status:
+        return None
+    message = ENDED_SHIFT_MESSAGES[status].format(appointment_id=entity_id, phone=phone)
+    raise_alert("no_response", "appointment", entity_id, phone, message, status)
+    mark_entity_reminded("appointment", entity_id, status)
+    mark_entity_alerted("appointment", entity_id, status)
+    return {"entity_type": "appointment", "entity_id": entity_id, "phone": phone, "status": status, "ok": True, "action": "alert"}
 
 
 def follow_up(
@@ -313,11 +340,10 @@ def run_checkin_dispatch(settings: dict[str, str]) -> list[dict[str, Any]]:
                 item["error"] = "Appointment sem horário interpretável."
                 results.append(item)
                 continue
-            # Atendimento de dia anterior não recebe check-in atrasado. A folga
-            # mínima cobre turno curto confirmado depois do horário de fim.
-            ends_at = max(
-                parse_br_datetime(appointment.get("end_at") or appointment.get("ends_at")) or starts_at,
-                starts_at + timedelta(hours=CHECKIN_FALLBACK_SHIFT_HOURS),
+            # Turno que já terminou não recebe check-in. Sem horário de fim
+            # conhecido, considera um turno de até 12 horas.
+            ends_at = parse_br_datetime(appointment.get("end_at") or appointment.get("ends_at")) or (
+                starts_at + timedelta(hours=CHECKIN_FALLBACK_SHIFT_HOURS)
             )
             if now < starts_at - timedelta(minutes=lead_minutes) or now > ends_at:
                 continue

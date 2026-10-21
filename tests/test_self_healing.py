@@ -243,21 +243,46 @@ class SelfHealingFlowTest(unittest.TestCase):
         self.assertEqual(result["followups"], [])
         self.assertEqual(self.storage.list_alerts(), [])
 
-    def test_short_shift_confirmed_after_its_end_still_gets_checkin(self):
+    def test_shift_that_already_ended_gets_no_checkin(self):
+        # Visto em produção: turno das 07:00 às 11:00 recebeu check-in às 15:09.
         now = self.now()
         self.create_booking(
             appointments=[
                 {
-                    "id": "apt-short",
-                    "start_at": (now - timedelta(minutes=20)).isoformat(),
-                    "end_at": (now - timedelta(minutes=15)).isoformat(),
+                    "id": "apt-ended",
+                    "start_at": (now - timedelta(hours=8)).isoformat(),
+                    "end_at": (now - timedelta(hours=4)).isoformat(),
                 }
             ]
         )
 
         result = self.run_cycle()
 
-        self.assertEqual([item["appointment_id"] for item in result["checkins"]], ["apt-short"])
+        self.assertEqual(result["checkins"], [])
+        self.assertIsNone(self.storage.get_appointment("apt-ended"))
+
+    def test_ended_shift_without_checkin_alerts_the_team_without_reminding_the_cooperator(self):
+        now = self.now()
+        self.create_booking(
+            appointments=[
+                {
+                    "id": "apt-late",
+                    "start_at": (now - timedelta(minutes=30)).isoformat(),
+                    "end_at": (now + timedelta(minutes=30)).isoformat(),
+                }
+            ]
+        )
+        self.run_cycle()
+        self.assertEqual(self.storage.get_appointment("apt-late")["local_status"], "checkin_pending")
+
+        after_end = self.run_cycle(at=now + timedelta(hours=1))
+        again = self.run_cycle(at=now + timedelta(hours=2))
+
+        self.assertEqual([item["action"] for item in after_end["followups"]], ["alert"])
+        self.assertEqual(again["followups"], [])
+        self.assertIn("terminou sem check-in", self.storage.list_alerts()[0]["message"])
+        reminders = [e for e in self.auto_replies(None) if "Lembrete" in str(e["payload"].get("text"))]
+        self.assertEqual(reminders, [])
 
     def test_arrival_without_location_gets_reminder_then_alert(self):
         now = self.now()
