@@ -358,6 +358,47 @@ class SelfHealingFlowTest(unittest.TestCase):
 
         self.assertEqual([member["booking_id"] for member in members], [11])
 
+    def test_summary_without_booking_id_finds_bookings_through_appointments(self):
+        # A 77Gestão passou a devolver o resumo por cooperado e mês, sem booking_id.
+        from nova_guarda.clients.gestao77 import Gestao77Client
+        from nova_guarda.gestao77_service import PENDING_SCHEDULE_STATUSES
+
+        summary = {
+            "cooperative_members": [
+                {"id": 641, "name": "Danilo", "schedule_status": "awaiting_send"},
+                {"id": 697, "name": "Douglas", "schedule_status": "awaiting_approval"},
+            ]
+        }
+
+        def appointment(apt_id, partner_id, booking_id, status, start_at):
+            return {
+                "id": apt_id,
+                "partner_id": partner_id,
+                "booking_id": booking_id,
+                "start_at": start_at,
+                "booking": {"id": booking_id, "status": status, "reference_date": start_at[:10] + " 00:00:00"},
+            }
+
+        appointments = {
+            "appointments": [
+                appointment(112, 641, 62, "awaiting_send", "2026-10-22T09:00:00.000000Z"),
+                appointment(113, 641, 62, "awaiting_send", "2026-10-24T09:00:00.000000Z"),
+                appointment(117, 641, 63, "awaiting_send", "2026-10-21T09:00:00.000000Z"),
+                appointment(50, 641, 40, "confirmed", "2026-10-02T09:00:00.000000Z"),
+                appointment(200, 641, 90, "awaiting_send", "2026-11-03T09:00:00.000000Z"),
+                appointment(60, 697, 51, "awaiting_approval", "2026-10-09T09:00:00.000000Z"),
+            ]
+        }
+
+        def fake_get(_client, path):
+            return appointments if path.startswith("/appointments") else summary
+
+        with patch.object(Gestao77Client, "_get", fake_get):
+            members = Gestao77Client(token="x").list_partner_bookings_by_status(10, 2026, PENDING_SCHEDULE_STATUSES)
+
+        self.assertEqual(sorted(member["booking_id"] for member in members), ["62", "63"])
+        self.assertTrue(all(member["id"] == 641 and member["name"] == "Danilo" for member in members))
+
     def test_fake_bookings_from_members_without_booking_are_purged(self):
         import json
 

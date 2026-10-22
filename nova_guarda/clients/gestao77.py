@@ -72,15 +72,47 @@ class Gestao77Client:
         members = payload.get("cooperative_members", [])
         if not isinstance(members, list):
             return []
-        return [
+        members = [
             member
             for member in members
-            # O resumo lista todos os cooperados, inclusive quem não tem escala
-            # no mês (booking_id nulo): só interessa quem tem booking de fato.
-            if isinstance(member, dict)
-            and member.get("booking_id")
-            and str(member.get("schedule_status", "")) in statuses
+            if isinstance(member, dict) and str(member.get("schedule_status", "")) in statuses
         ]
+        with_booking = [member for member in members if member.get("booking_id")]
+        without_booking = [member for member in members if not member.get("booking_id")]
+        if not without_booking:
+            return with_booking
+        # O resumo passou a ser por cooperado e mês, sem booking_id: as escalas
+        # (bookings) de cada cooperado vêm dos atendimentos, cada um com o
+        # booking e o status dele.
+        return with_booking + self._bookings_from_appointments(without_booking, month, year, statuses)
+
+    def _bookings_from_appointments(
+        self,
+        members: list[dict[str, Any]],
+        month: int,
+        year: int,
+        statuses: set[str],
+    ) -> list[dict[str, Any]]:
+        by_partner = {str(member.get("id") or member.get("partner_id")): member for member in members}
+        payload = self._get("/appointments?skipLoader=1")
+        appointments = payload.get("appointments") if isinstance(payload, dict) else None
+        period = f"{year:04d}-{month:02d}"
+        found: dict[str, dict[str, Any]] = {}
+        for appointment in appointments if isinstance(appointments, list) else []:
+            if not isinstance(appointment, dict):
+                continue
+            member = by_partner.get(str(appointment.get("partner_id")))
+            booking = appointment.get("booking") if isinstance(appointment.get("booking"), dict) else {}
+            booking_id = str(appointment.get("booking_id") or booking.get("id") or "")
+            status = str(booking.get("status") or "")
+            if not member or not booking_id or status not in statuses:
+                continue
+            in_period = str(appointment.get("start_at") or "")[:7] == period or str(
+                booking.get("reference_date") or ""
+            )[:7] == period
+            if in_period and booking_id not in found:
+                found[booking_id] = {**member, "booking_id": booking_id, "schedule_status": status}
+        return list(found.values())
 
     def update_appointment_status(
         self,
