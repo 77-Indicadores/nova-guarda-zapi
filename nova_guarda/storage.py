@@ -1225,6 +1225,14 @@ def get_booking_by_message_id(message_id: str) -> dict[str, Any] | None:
     return row_to_booking(row) if row else None
 
 
+def list_bookings_by_message_id(message_id: str) -> list[dict[str, Any]]:
+    """Escalas do mês enviadas juntas compartilham a mesma mensagem."""
+    init_db()
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM bookings WHERE whatsapp_message_id = ?", (message_id,)).fetchall()
+    return [row_to_booking(row) for row in rows]
+
+
 def get_appointment_by_message_id(message_id: str) -> dict[str, Any] | None:
     init_db()
     with connect() as conn:

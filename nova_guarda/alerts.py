@@ -10,6 +10,7 @@ from nova_guarda.storage import (
     get_appointment_by_message_id,
     get_booking_by_message_id,
     get_setting,
+    list_bookings_by_message_id,
     revert_undelivered_booking,
     revert_undelivered_checkin,
 )
@@ -55,7 +56,9 @@ def handle_delivery_failure(message_id: str, phone: str, reason: str) -> dict[st
         booking_id = booking["booking_id"]
         first_failure = count_alerts("delivery_failed", "booking", booking_id) == 0
         if first_failure:
-            revert_undelivered_booking(booking_id)
+            for sent in list_bookings_by_message_id(message_id):
+                if sent.get("local_status") == "sent":
+                    revert_undelivered_booking(sent["booking_id"])
         raise_alert(
             "delivery_failed",
             "booking",

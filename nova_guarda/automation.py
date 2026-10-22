@@ -7,7 +7,9 @@ import requests
 from nova_guarda.alerts import raise_alert
 from nova_guarda.gestao77_service import (
     agenda_data_from_booking,
+    booking_month_key,
     list_pending_partner_bookings,
+    month_bookings,
     refresh_booking_appointments,
     retry_pending_gestao77_syncs,
     send_booking_to_partner,
@@ -218,10 +220,24 @@ def run_stale_sweep(settings: dict[str, str], now: datetime) -> list[dict[str, A
     presence_wait = timedelta(minutes=positive_int(settings.get("presence_reminder_minutes"), 15, minimum=1, maximum=1440))
     results: list[dict[str, Any]] = []
 
+    handled_months: set[tuple[str, str]] = set()
     for booking in list_bookings("sent"):
+        # Escalas do mesmo mês saem numa mensagem só: lembrete e alerta também.
+        month = (normalize_phone(str(booking.get("phone") or "")), booking_month_key(booking))
+        if month[1] and month in handled_months:
+            continue
         item = follow_up("booking", booking["booking_id"], booking, parse_br_datetime(booking.get("sent_at")), booking_wait, now)
         if item:
             results.append(item)
+            if month[1]:
+                handled_months.add(month)
+                for other in month_bookings(booking, {"sent"}):
+                    if str(other.get("booking_id")) == str(booking["booking_id"]):
+                        continue
+                    if item.get("action") == "reminder":
+                        mark_entity_reminded("booking", other["booking_id"], "sent")
+                    elif item.get("action") == "alert":
+                        mark_entity_alerted("booking", other["booking_id"], "sent")
 
     for status in STALE_APPOINTMENT_MESSAGES:
         for appointment in list_appointments(status):

@@ -32,6 +32,7 @@ from nova_guarda.storage import (
     get_appointment,
     get_appointment_awaiting_location,
     get_booking,
+    list_bookings,
     get_cooperator,
     get_latest_appointment_by_phone,
     get_latest_booking_by_phone,
@@ -346,6 +347,61 @@ def fake_gestao77_enabled() -> bool:
     return os.getenv("DEV_FAKE_GESTAO77", "false").strip().lower() in {"1", "true", "yes", "sim"}
 
 
+UNSENT_BOOKING_STATUSES = {"pending", ""}
+
+
+def booking_month_key(booking: dict[str, Any]) -> str:
+    """Mês da escala (ano-mês do primeiro dia, no horário de Brasília)."""
+    payload = booking.get("payload") or {}
+    appointments = payload.get("appointments") if isinstance(payload.get("appointments"), list) else []
+    starts = [
+        parsed
+        for parsed in (_parse_br(item.get("start_at")) for item in appointments if isinstance(item, dict))
+        if parsed
+    ]
+    if starts:
+        return f"{min(starts):%Y-%m}"
+    return ""
+
+
+def month_bookings(booking: dict[str, Any], statuses: set[str]) -> list[dict[str, Any]]:
+    """Escalas do mesmo cooperado no mesmo mês, nos status pedidos. O
+    cooperado responde o mês inteiro de uma vez, mesmo que a 77Gestão tenha
+    vários bookings (ex.: dias pares e ímpares em escalas separadas)."""
+    phone = normalize_phone(booking.get("phone", ""))
+    key = booking_month_key(booking)
+    group = [booking]
+    if phone and key:
+        group += [
+            other
+            for other in list_bookings()
+            if str(other.get("booking_id")) != str(booking.get("booking_id"))
+            and normalize_phone(other.get("phone", "")) == phone
+            and (other.get("local_status") or "") in statuses
+            and booking_month_key(other) == key
+        ]
+    return sorted(group, key=lambda item: (len(str(item.get("booking_id"))), str(item.get("booking_id"))))
+
+
+def combined_month_booking(bookings: list[dict[str, Any]]) -> dict[str, Any]:
+    """Uma escala só com os dias de todos os bookings do mês; o booking_id
+    junta os ids (vai nos botões Confirmar/Recusar)."""
+    first = bookings[0]
+    if len(bookings) == 1:
+        return first
+    appointments = [
+        appointment
+        for booking in bookings
+        for appointment in ((booking.get("payload") or {}).get("appointments") or [])
+        if isinstance(appointment, dict)
+    ]
+    return {
+        **first,
+        "booking_id": ",".join(str(booking.get("booking_id")) for booking in bookings),
+        "payload": {**(first.get("payload") or {}), "appointments": appointments},
+    }
+
+
 def send_booking_to_partner(booking_id: int | str, phone: str = "") -> dict[str, Any]:
     booking = get_booking(booking_id)
     if not booking:
@@ -369,8 +425,14 @@ def send_booking_to_partner(booking_id: int | str, phone: str = "") -> dict[str,
             "gestao77": sync_response,
         }
 
-    agenda_data = schedule_data_from_booking(booking)
-    message, response_payload = send_schedule_message(booking, phone, agenda_data)
+    group = month_bookings(booking, UNSENT_BOOKING_STATUSES)
+    month_booking = combined_month_booking(group)
+    agenda_data = schedule_data_from_booking(month_booking)
+    message, response_payload = send_schedule_message(month_booking, phone, agenda_data)
+    for member in group:
+        if str(member.get("booking_id")) != str(booking_id):
+            mark_booking_whatsapp_sent(member["booking_id"], phone, whatsapp_provider(), response_payload)
+            mark_booking_sent(member["booking_id"])
     sent_booking = mark_booking_whatsapp_sent(booking_id, phone, whatsapp_provider(), response_payload)
 
     AGENDA_STATE[phone] = {
@@ -378,8 +440,8 @@ def send_booking_to_partner(booking_id: int | str, phone: str = "") -> dict[str,
         "mode": "agenda",
         "status": "sent",
         "status_label": agenda_status_label("sent"),
-        "agenda": {**agenda_data, "booking_id": str(booking_id)},
-        "booking_id": str(booking_id),
+        "agenda": {**agenda_data, "booking_id": month_booking["booking_id"]},
+        "booking_id": month_booking["booking_id"],
         "last_reply": "",
         "updated_at": sent_booking.get("updated_at", ""),
         "history": [],
@@ -388,6 +450,7 @@ def send_booking_to_partner(booking_id: int | str, phone: str = "") -> dict[str,
     sync_response = mark_booking_sent(booking_id)
     return {
         "booking_id": str(booking_id),
+        "month_booking_ids": [str(member.get("booking_id")) for member in group],
         "phone": phone,
         "status": "sent",
         "message": message,
@@ -457,24 +520,39 @@ def send_checkin_to_partner(
 
 
 def sync_booking_reply_for_phone(phone: str, decision: str, booking_id: str = "") -> dict[str, Any] | None:
+    """Registra a resposta da escala. `booking_id` pode trazer vários ids
+    (escala do mês): a resposta vale para todos."""
     phone = normalize_phone(phone)
-    if booking_id:
-        booking = get_booking(booking_id)
+    booking_ids = [item.strip() for item in str(booking_id or "").split(",") if item.strip()]
+    for item in booking_ids:
+        booking = get_booking(item)
         if not booking or normalize_phone(booking.get("phone", "")) != phone:
             raise PermissionError("Resposta de escala não pertence a este telefone.")
-    state = AGENDA_STATE.get(phone, {})
-    booking_id = booking_id or state.get("booking_id") or state.get("agenda", {}).get("booking_id")
-    if not booking_id:
-        booking = get_latest_booking_by_phone(phone)
-        booking_id = booking.get("booking_id") if booking else None
-    if not booking_id:
+    if not booking_ids:
+        state = AGENDA_STATE.get(phone, {})
+        fallback = state.get("booking_id") or state.get("agenda", {}).get("booking_id")
+        if not fallback:
+            booking = get_latest_booking_by_phone(phone)
+            fallback = booking.get("booking_id") if booking else None
+        booking_ids = [item.strip() for item in str(fallback or "").split(",") if item.strip()]
+    if not booking_ids:
         return None
 
     if decision == "confirmed":
-        return sync_booking_response(booking_id, "confirmed")
-    if decision in {"cancelled", "declined"}:
-        return sync_booking_response(booking_id, "declined")
-    return None
+        target = "confirmed"
+    elif decision in {"cancelled", "declined"}:
+        target = "declined"
+    else:
+        return None
+    results = [sync_booking_response(item, target) for item in booking_ids]
+    if len(results) == 1:
+        return results[0]
+    return {
+        "booking_id": ",".join(booking_ids),
+        "status": target,
+        "idempotent": all(result.get("idempotent") for result in results),
+        "bookings": results,
+    }
 
 
 def sync_booking_response(booking_id: int | str, target_status: str) -> dict[str, Any]:
@@ -660,8 +738,12 @@ def send_followup_reminder(entity_type: str, entity: dict[str, Any]) -> dict[str
     if not phone:
         raise ValueError("Sem telefone para enviar lembrete.")
     if entity_type == "booking":
+        month_booking = combined_month_booking(month_bookings(entity, {"sent"}))
         _, response = send_schedule_message(
-            entity, phone, schedule_data_from_booking(entity), prefix="Lembrete: sua escala ainda aguarda resposta.\n\n"
+            month_booking,
+            phone,
+            schedule_data_from_booking(month_booking),
+            prefix="Lembrete: sua escala ainda aguarda resposta.\n\n",
         )
         return response
 

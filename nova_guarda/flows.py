@@ -25,6 +25,12 @@ def booking_id_from_reply(text: str) -> str:
     return ""
 
 
+def booking_ids_from_reply(text: str) -> list[str]:
+    """A escala do mês junta todos os bookings do cooperado no mês: o botão
+    carrega os ids separados por vírgula (`booking_confirm:62,63`)."""
+    return [item.strip() for item in booking_id_from_reply(text).split(",") if item.strip()]
+
+
 def classify_checkin_reply(text: str) -> str | None:
     normalized = text.strip().lower()
     if normalized.startswith((

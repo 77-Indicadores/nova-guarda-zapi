@@ -44,6 +44,7 @@ from nova_guarda.gestao77_service import (
     run_full_assisted_test,
     run_test_for_existing_cooperator,
     schedule_data_from_booking,
+    combined_month_booking,
     send_booking_to_partner,
     send_checkin_to_partner,
     send_checkout_to_partner,
@@ -132,6 +133,7 @@ from nova_guarda.flows import (
     agenda_data_from_payload,
     agenda_status_label,
     booking_id_from_reply,
+    booking_ids_from_reply,
     checkin_status_label,
     classify_agenda_reply,
     classify_checkin_reply,
@@ -267,9 +269,11 @@ def presence_refusal_reply(phone: str, decision: str, checkout: bool) -> str:
 
 
 def booking_refusal_reply(phone: str, text: str) -> str:
-    booking = get_booking(booking_id_from_reply(text) or "")
-    if booking_id_from_reply(text) and (not booking or normalize_phone(booking.get("phone", "")) != phone):
+    booking_ids = booking_ids_from_reply(text)
+    bookings = [get_booking(item) for item in booking_ids]
+    if any(not item or normalize_phone(item.get("phone", "")) != phone for item in bookings):
         return f"Não encontrei esta escala para o seu número. {TEAM_HELP}"
+    booking = bookings[0] if bookings else None
     status = (booking or {}).get("local_status")
     if status == "confirmed":
         return f"Esta escala já está confirmada. Para mudar sua resposta, {TEAM_HELP[0].lower()}{TEAM_HELP[1:]}"
@@ -552,8 +556,12 @@ def handle_webhook_payload(payload: dict) -> None:
             state = update_agenda_state(phone, next_status, text)
             # Os dados da escala vêm do banco: o estado em memória se perde a
             # cada reinício do app e a resposta sairia genérica.
-            confirmed_booking = get_booking((sync_result or {}).get("booking_id") or "")
-            agenda = schedule_data_from_booking(confirmed_booking) if confirmed_booking else state.get("agenda")
+            answered = [
+                booking
+                for booking in (get_booking(item) for item in str((sync_result or {}).get("booking_id") or "").split(",") if item)
+                if booking
+            ]
+            agenda = schedule_data_from_booking(combined_month_booking(answered)) if answered else state.get("agenda")
             reply = build_confirmation_reply(state["status"], agenda)
 
             try:
@@ -1009,11 +1017,12 @@ def create_app() -> Flask:
 
     @app.get("/escalas/<booking_id>/pdf")
     def escala_pdf(booking_id: str):
-        booking = get_booking(booking_id)
-        if not booking:
+        # A escala do mês junta vários bookings ("62,63").
+        bookings = [get_booking(item) for item in booking_id.split(",") if item.strip()]
+        if not bookings or not all(bookings):
             abort(404)
         try:
-            content = fetch_schedule_pdf(booking)
+            content = fetch_schedule_pdf(combined_month_booking(bookings))
         except (RuntimeError, requests.RequestException, ValueError) as exc:
             logger.exception("Erro ao buscar PDF da escala %s: %s", booking_id, exc)
             return f"Não consegui buscar o PDF da escala na 77Gestão: {exc}", 502
