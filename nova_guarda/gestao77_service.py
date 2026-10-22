@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -32,6 +33,8 @@ from nova_guarda.storage import (
     get_appointment,
     get_appointment_awaiting_location,
     get_booking,
+    reopen_changed_booking,
+    set_booking_sent_signature,
     list_bookings,
     get_cooperator,
     get_latest_appointment_by_phone,
@@ -86,7 +89,29 @@ def list_pending_partner_bookings(month: int, year: int, body: dict[str, Any] | 
         statuses=PENDING_SCHEDULE_STATUSES,
         body=body,
     )
-    return [upsert_booking(enrich_booking(client, booking)) for booking in bookings]
+    imported = []
+    for booking in bookings:
+        enriched = enrich_booking(client, booking)
+        if str(enriched.get("schedule_status") or "") == "awaiting_send" and enriched.get("booking_id"):
+            # Já enviada/respondida, de volta em "aguardando envio" e com dias
+            # ou horários diferentes: a equipe alterou a escala. O cooperado
+            # recebe de novo para confirmar.
+            reopen_changed_booking(enriched["booking_id"], schedule_signature({"payload": enriched}))
+        imported.append(upsert_booking(enriched))
+    return imported
+
+
+def schedule_signature(booking: dict[str, Any]) -> str:
+    """Dias e horários da escala (atendimentos não cancelados)."""
+    payload = booking.get("payload") or {}
+    appointments = payload.get("appointments") if isinstance(payload.get("appointments"), list) else []
+    shifts = sorted(
+        (str(item.get("id") or ""), str(item.get("start_at") or ""), str(item.get("end_at") or ""))
+        for item in appointments
+        if isinstance(item, dict)
+        and str(item.get("status") or "").strip().lower() not in {"cancelled", "canceled", "cancelado", "cancelada"}
+    )
+    return json.dumps(shifts)
 
 
 def enrich_booking(client: Gestao77Client, booking: dict[str, Any]) -> dict[str, Any]:
@@ -443,8 +468,11 @@ def send_booking_to_partner(booking_id: int | str, phone: str = "") -> dict[str,
     group = month_bookings(booking, UNSENT_BOOKING_STATUSES)
     month_booking = combined_month_booking(group)
     agenda_data = schedule_data_from_booking(month_booking)
-    message, response_payload = send_schedule_message(month_booking, phone, agenda_data)
+    changed = any((member.get("payload") or {}).get("schedule_changed") for member in group)
+    prefix = "Sua escala foi alterada. Confira os dias no PDF e confirme de novo.\n\n" if changed else ""
+    message, response_payload = send_schedule_message(month_booking, phone, agenda_data, prefix=prefix)
     for member in group:
+        set_booking_sent_signature(member["booking_id"], schedule_signature(member))
         if str(member.get("booking_id")) != str(booking_id):
             mark_booking_whatsapp_sent(member["booking_id"], phone, whatsapp_provider(), response_payload)
             mark_booking_sent(member["booking_id"])

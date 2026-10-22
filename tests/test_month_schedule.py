@@ -1,4 +1,5 @@
 import unittest
+import unittest.mock
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -156,3 +157,60 @@ class MonthScheduleFlowTest(unittest.TestCase):
         if past.month == future.month:
             self.assertEqual(result["month_booking_ids"], ["68"])
         self.assertEqual(self.storage.get_booking("19")["local_status"], "pending")
+
+    # escala alterada pela equipe -------------------------------------------------
+    def import_from_gestao77(self, members, day=27):
+        from nova_guarda.gestao77_service import list_pending_partner_bookings
+
+        fake = unittest.mock.Mock()
+        fake.list_partner_bookings_by_status.return_value = members
+        fake.get_partner.return_value = {"partner": {"phones": []}}
+        fake.list_appointments_by_booking.side_effect = lambda booking_id: {
+            "appointments": [{"id": f"apt-{booking_id}-27", "start_at": BR_OCT.format(day=day)}]
+        }
+        with patch("nova_guarda.gestao77_service.Gestao77Client.from_env", return_value=fake):
+            return list_pending_partner_bookings(11, 2026)
+
+    def member(self, booking_id, status="awaiting_send"):
+        return {"id": 597, "name": "Cooperado Teste", "booking_id": booking_id, "phone": self.phone, "schedule_status": status}
+
+    def test_changed_schedule_back_to_awaiting_send_is_sent_again_with_notice(self):
+        from nova_guarda.gestao77_service import send_booking_to_partner
+
+        self.import_from_gestao77([self.member("62")])
+        send_booking_to_partner("62")
+        self.reply("booking_confirm:62")
+        self.assertEqual(self.storage.get_booking("62")["local_status"], "confirmed")
+
+        # Liberar o mês de novo sem mudar nada não reenvia.
+        self.import_from_gestao77([self.member("62")])
+        self.assertEqual(self.storage.get_booking("62")["local_status"], "confirmed")
+
+        # A equipe altera o horário e a 77Gestão volta para "aguardando envio".
+        self.import_from_gestao77([self.member("62")], day=28)
+        self.assertEqual(self.storage.get_booking("62")["local_status"], "pending")
+        send_booking_to_partner("62")
+
+        last = self.sent_schedules()[0]["payload"]
+        self.assertIn("Sua escala foi alterada", last.get("message") or last["response"]["payload"]["message"])
+        self.assertEqual(self.storage.get_booking("62")["local_status"], "sent")
+        self.reply("booking_confirm:62")
+        self.assertEqual(self.storage.get_booking("62")["local_status"], "confirmed")
+
+    def test_first_send_has_no_changed_notice(self):
+        from nova_guarda.gestao77_service import send_booking_to_partner
+
+        self.import_from_gestao77([self.member("62")])
+        send_booking_to_partner("62")
+
+        last = self.sent_schedules()[0]["payload"]
+        self.assertNotIn("alterada", last.get("message") or last["response"]["payload"]["message"])
+
+    def test_booking_still_awaiting_its_own_sent_sync_is_not_reopened(self):
+        # Envio feito, mas o "sent" ainda não chegou na 77Gestão: não é alteração.
+        self.import_from_gestao77([self.member("62")])
+        self.storage.update_booking_local_status("62", "sent")
+
+        self.import_from_gestao77([self.member("62")])
+
+        self.assertEqual(self.storage.get_booking("62")["local_status"], "sent")

@@ -209,6 +209,7 @@ def init_db() -> None:
         ensure_column(conn, "bookings", "gestao77_status", "TEXT")
         ensure_column(conn, "bookings", "whatsapp_message_id", "TEXT")
         ensure_column(conn, "bookings", "synced_at", "TEXT")
+        ensure_column(conn, "bookings", "sent_signature", "TEXT")
         ensure_column(conn, "appointments", "provider", "TEXT")
         ensure_column(conn, "appointments", "gestao77_status", "TEXT")
         ensure_column(conn, "appointments", "checkin_message_id", "TEXT")
@@ -280,6 +281,45 @@ def ensure_column(conn: Any, table: str, column: str, definition: str) -> None:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+ANSWERED_BOOKING_STATUSES = {"sent", "confirmed", "declined"}
+
+
+def set_booking_sent_signature(booking_id: str | int, signature: str) -> None:
+    """Dias/horários da escala no momento do envio, para reconhecer depois
+    se ela foi alterada."""
+    init_db()
+    with connect() as conn:
+        conn.execute("UPDATE bookings SET sent_signature = ? WHERE booking_id = ?", (signature, str(booking_id)))
+
+
+def reopen_changed_booking(booking_id: str | int, signature: str) -> bool:
+    """A equipe alterou os dias/horários da escala e a 77Gestão a devolveu
+    para "aguardando envio" depois de já ter registrado o envio/resposta:
+    volta para a fila, marcada como alterada, para o cooperado receber e
+    confirmar de novo. Liberar o mês de novo sem mudar nada não reenvia."""
+    init_db()
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM bookings WHERE booking_id = ?", (str(booking_id),)).fetchone()
+        if not row:
+            return False
+        if row["local_status"] not in ANSWERED_BOOKING_STATUSES or row["gestao77_status"] not in ANSWERED_BOOKING_STATUSES:
+            return False
+        if not row["sent_signature"] or row["sent_signature"] == signature:
+            return False
+        payload = json.loads(row["payload_json"] or "{}")
+        payload["schedule_changed"] = True
+        conn.execute(
+            """
+            UPDATE bookings
+            SET local_status = 'pending', gestao77_status = NULL, reminder_status = NULL, alert_status = NULL,
+                payload_json = ?, updated_at = ?
+            WHERE booking_id = ?
+            """,
+            (json.dumps(payload, ensure_ascii=False), timestamp(), str(booking_id)),
+        )
+    return True
+
+
 def upsert_booking(member: dict[str, Any], phone: str = "", local_status: str = "pending") -> dict[str, Any]:
     init_db()
     # Nunca usa o id do cooperado como booking_id: cooperado sem escala no mês
@@ -301,6 +341,11 @@ def upsert_booking(member: dict[str, Any], phone: str = "", local_status: str = 
         existing = conn.execute("SELECT * FROM bookings WHERE booking_id = ?", (booking_id,)).fetchone()
         created_at = existing["created_at"] if existing else now
         local_status = existing["local_status"] if existing and existing["local_status"] != "pending" else local_status
+        if existing and existing["local_status"] == "pending":
+            # Aviso de "escala alterada" vale até o próximo envio.
+            previous = json.loads(existing["payload_json"] or "{}")
+            if previous.get("schedule_changed"):
+                member = {**member, "schedule_changed": True}
         conn.execute(
             """
             INSERT INTO bookings (
