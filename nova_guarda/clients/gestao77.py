@@ -157,12 +157,14 @@ class Gestao77Client:
         appointment = payload.get("appointment", payload) if isinstance(payload, dict) else {}
         return appointment if isinstance(appointment, dict) else {}
 
-    def release_booking_for_send(self, booking_id: str | int) -> dict[str, Any]:
-        """Mesmo passo do botão "Enviar escala" da 77Gestão: leva a escala de
-        "aguardando aprovação" para "aguardando envio", único status a partir
-        do qual ela aceita sent/confirmed/declined."""
+    def release_partner_month_for_send(self, partner_id: str | int, month: int, year: int) -> dict[str, Any]:
+        """Mesmo passo do botão "Enviar escala" da 77Gestão: leva as escalas do
+        cooperado no mês de "aguardando aprovação" para "aguardando envio",
+        único status a partir do qual ela aceita sent/confirmed/declined."""
         return self._request(
-            "PUT", f"/bookings/{booking_id}/cooperative-member-schedule-status", {"status": "awaiting_send"}
+            "PUT",
+            f"/partners/{partner_id}/cooperative-member-schedule-status",
+            {"status": "awaiting_send", "month": month, "year": year},
         )
 
     def _get(self, path: str) -> dict[str, Any]:

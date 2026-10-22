@@ -83,7 +83,7 @@ class RealGestao77SeedTest(unittest.TestCase):
         )
 
         fake_client = Mock()
-        fake_client.release_booking_for_send.return_value = {"status": "success"}
+        fake_client.release_partner_month_for_send.return_value = {"status": "success"}
         fake_client.create_appointment.return_value = {
             "status": "success",
             "appointment": {
@@ -103,7 +103,8 @@ class RealGestao77SeedTest(unittest.TestCase):
         self.assertEqual(result["booking_id"], "3")
         self.assertEqual(result["appointment_id"], "23")
         # A escala de teste é liberada para envio antes do "sent", como no botão da 77Gestão.
-        fake_client.release_booking_for_send.assert_called_once_with("3")
+        fake_client.release_partner_month_for_send.assert_called_once()
+        self.assertEqual(fake_client.release_partner_month_for_send.call_args[0][0], "603")
 
         payload = fake_client.create_appointment.call_args[0][0]
         # Recorrência: os dias seguintes entram no mesmo booking na 77Gestão.
@@ -141,7 +142,7 @@ class RealGestao77SeedTest(unittest.TestCase):
         )
 
         fake_client = Mock()
-        fake_client.release_booking_for_send.return_value = {"status": "success"}
+        fake_client.release_partner_month_for_send.return_value = {"status": "success"}
         fake_client.create_appointment.return_value = {
             "status": "success",
             "appointment": {
@@ -178,7 +179,7 @@ class RealGestao77SeedTest(unittest.TestCase):
         )
 
         fake_client = Mock()
-        fake_client.release_booking_for_send.return_value = {"status": "success"}
+        fake_client.release_partner_month_for_send.return_value = {"status": "success"}
         fake_client.create_appointment.return_value = {
             "status": "success",
             "appointment": {
@@ -220,7 +221,7 @@ class RealGestao77SeedTest(unittest.TestCase):
             '400 Client Error | resposta: {"message":"O cooperado j\\u00e1 possui um agendamento neste hor\\u00e1rio."}'
         )
         fake_client = Mock()
-        fake_client.release_booking_for_send.return_value = {"status": "success"}
+        fake_client.release_partner_month_for_send.return_value = {"status": "success"}
         fake_client.update_booking_schedule_response.return_value = {"status": "success"}
         fake_client.create_appointment.side_effect = [
             overlap,

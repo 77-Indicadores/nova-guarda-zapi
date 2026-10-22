@@ -1222,9 +1222,11 @@ def seed_test_booking_and_send(phone: str, client_name: str = "", customer_name:
     if created_booking_id:
         # A escala nasce "aguardando aprovação"; sem liberar para envio a
         # 77Gestão recusa sent/confirmed/declined e o teste nunca sincroniza.
-        release_request = {"status": "awaiting_send"}
+        # A liberação é por cooperado e mês (a rota por booking foi removida).
+        local_start = start.astimezone(br_now().tzinfo)
+        release_request = {"partner_id": partner_id, "status": "awaiting_send", "month": local_start.month, "year": local_start.year}
         try:
-            released = client.release_booking_for_send(created_booking_id)
+            released = client.release_partner_month_for_send(partner_id, local_start.month, local_start.year)
             save_sync_event("booking", created_booking_id, "teste_assistido:release_for_send", True, release_request, released)
         except (RuntimeError, requests.RequestException) as exc:
             save_sync_event(
