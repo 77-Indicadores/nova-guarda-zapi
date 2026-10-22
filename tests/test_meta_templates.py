@@ -69,8 +69,8 @@ class MetaTemplatesTest(unittest.TestCase):
                 "appointments": [
                     {
                         "id": "9001",
-                        "start_at": "2026-10-08T16:00:00Z",
-                        "end_at": "2026-10-08T22:00:00Z",
+                        "start_at": "2027-10-08T16:00:00Z",
+                        "end_at": "2027-10-08T22:00:00Z",
                         "customer": {"name": "Cliente X"},
                     }
                 ],
@@ -117,7 +117,7 @@ class MetaTemplatesTest(unittest.TestCase):
         self.assertEqual(header["parameters"][0]["document"]["id"], "media-1")
         self.assertTrue(header["parameters"][0]["document"]["filename"].endswith(".pdf"))
         self.assertEqual(self.button_payloads(message), ["booking_confirm:880", "booking_decline:880"])
-        self.assertEqual(self.body_texts(message), ["Cooperado Teste", "outubro/2026", "1 dia(s), de 08/10 a 08/10"])
+        self.assertEqual(self.body_texts(message), ["Cooperado Teste", "outubro/2027", "1 dia(s), de 08/10 a 08/10"])
         self.assertEqual(self.storage.get_booking("880")["whatsapp_message_id"], "wamid.1")
 
     def test_booking_inside_window_is_one_message_with_pdf_header_and_buttons(self):
@@ -130,7 +130,7 @@ class MetaTemplatesTest(unittest.TestCase):
         message = self.sent[0]
         self.assertEqual(message["type"], "interactive")
         self.assertEqual(message["interactive"]["header"]["document"]["id"], "media-1")
-        self.assertIn("escala de trabalho de outubro/2026", message["interactive"]["body"]["text"])
+        self.assertIn("escala de trabalho de outubro/2027", message["interactive"]["body"]["text"])
         self.assertIn("PDF", message["interactive"]["body"]["text"])
         self.assertNotIn("Horário:", message["interactive"]["body"]["text"])
 
@@ -184,7 +184,7 @@ class MetaTemplatesTest(unittest.TestCase):
         )
 
         self.assertEqual(self.storage.get_booking("880")["local_status"], "confirmed")
-        self.assertIn("Escala de outubro/2026 confirmada", self.sent[-1]["text"]["body"])
+        self.assertIn("Escala de outubro/2027 confirmada", self.sent[-1]["text"]["body"])
         self.assertIn("check-in em cada dia de trabalho", self.sent[-1]["text"]["body"])
 
     def test_checkin_and_checkout_templates_carry_the_appointment(self):
@@ -203,7 +203,7 @@ class MetaTemplatesTest(unittest.TestCase):
             self.button_payloads(checkin),
             ["checkin2_arrived:9001", "checkin_late:9001", "checkin_not_going:9001"],
         )
-        self.assertEqual(self.body_texts(checkin), ["Cooperado Teste", "08/10/2026", "13:00 às 19:00", "Cliente X"])
+        self.assertEqual(self.body_texts(checkin), ["Cooperado Teste", "08/10/2027", "13:00 às 19:00", "Cliente X"])
 
         self.storage.mark_appointment_location_pending("9001")
         self.storage.transition_appointment_checkin("9001")
@@ -212,7 +212,7 @@ class MetaTemplatesTest(unittest.TestCase):
         checkout = self.sent[-1]
         self.assertEqual(self.template(checkout)["name"], "nova_guarda_checkout_atendimento_v3")
         self.assertEqual(self.button_payloads(checkout), ["checkout_confirm:9001"])
-        self.assertEqual(self.body_texts(checkout), ["Cooperado Teste", "08/10/2026", "13:00 às 19:00", "Cliente X"])
+        self.assertEqual(self.body_texts(checkout), ["Cooperado Teste", "08/10/2027", "13:00 às 19:00", "Cliente X"])
 
     def test_terms_outside_window_use_only_the_template(self):
         from nova_guarda.onboarding import send_terms_to_phone

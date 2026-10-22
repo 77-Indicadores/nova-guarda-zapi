@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 from tests import test_self_healing
 
-BR_OCT = "2026-10-{day:02d}T06:00:00-03:00"
+BR_OCT = "2026-11-{day:02d}T06:00:00-03:00"
 
 
 class MonthScheduleFlowTest(unittest.TestCase):
@@ -99,7 +99,7 @@ class MonthScheduleFlowTest(unittest.TestCase):
 
         self.month_booking("62", [22])
         self.create_booking(
-            "70", appointments=[{"id": "apt-nov", "start_at": "2026-11-03T06:00:00-03:00"}], status="pending"
+            "70", appointments=[{"id": "apt-nov", "start_at": "2026-12-03T06:00:00-03:00"}], status="pending"
         )
         self.month_booking("45", [12], status="confirmed")
 
@@ -139,3 +139,20 @@ class MonthScheduleFlowTest(unittest.TestCase):
 
         self.assertEqual(self.storage.get_booking("62")["local_status"], "pending")
         self.assertEqual(self.storage.get_booking("63")["local_status"], "pending")
+
+    def test_booking_entirely_in_the_past_is_not_sent_nor_grouped(self):
+        from nova_guarda.gestao77_service import send_booking_to_partner
+
+        today = self.now()
+        past = (today - timedelta(days=3)).replace(hour=6, minute=0, second=0, microsecond=0)
+        future = (today + timedelta(days=3)).replace(hour=6, minute=0, second=0, microsecond=0)
+        self.create_booking("19", appointments=[{"id": "apt-old", "start_at": past.isoformat()}], status="pending")
+        self.create_booking("68", appointments=[{"id": "apt-new", "start_at": future.isoformat()}], status="pending")
+
+        with self.assertRaises(ValueError):
+            send_booking_to_partner("19")
+        result = send_booking_to_partner("68")
+
+        if past.month == future.month:
+            self.assertEqual(result["month_booking_ids"], ["68"])
+        self.assertEqual(self.storage.get_booking("19")["local_status"], "pending")

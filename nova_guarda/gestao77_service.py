@@ -364,6 +364,18 @@ def booking_month_key(booking: dict[str, Any]) -> str:
     return ""
 
 
+def booking_already_ended(booking: dict[str, Any]) -> bool:
+    """Escala cujo último dia já passou: não há o que confirmar."""
+    payload = booking.get("payload") or {}
+    appointments = payload.get("appointments") if isinstance(payload.get("appointments"), list) else []
+    starts = [
+        parsed
+        for parsed in (_parse_br(item.get("start_at")) for item in appointments if isinstance(item, dict))
+        if parsed
+    ]
+    return bool(starts) and max(starts).date() < br_now().date()
+
+
 def month_bookings(booking: dict[str, Any], statuses: set[str]) -> list[dict[str, Any]]:
     """Escalas do mesmo cooperado no mesmo mês, nos status pedidos. O
     cooperado responde o mês inteiro de uma vez, mesmo que a 77Gestão tenha
@@ -379,6 +391,7 @@ def month_bookings(booking: dict[str, Any], statuses: set[str]) -> list[dict[str
             and normalize_phone(other.get("phone", "")) == phone
             and (other.get("local_status") or "") in statuses
             and booking_month_key(other) == key
+            and not booking_already_ended(other)
         ]
     return sorted(group, key=lambda item: (len(str(item.get("booking_id"))), str(item.get("booking_id"))))
 
@@ -425,6 +438,8 @@ def send_booking_to_partner(booking_id: int | str, phone: str = "") -> dict[str,
             "gestao77": sync_response,
         }
 
+    if booking_already_ended(booking):
+        raise ValueError("Escala com todos os dias no passado: não é enviada ao cooperado.")
     group = month_bookings(booking, UNSENT_BOOKING_STATUSES)
     month_booking = combined_month_booking(group)
     agenda_data = schedule_data_from_booking(month_booking)

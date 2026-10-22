@@ -65,7 +65,7 @@ class BookingFlowTest(unittest.TestCase):
                 "appointments": [
                     {
                         "id": "appointment-1",
-                        "start_at": "2026-08-30T12:00:00Z",
+                        "start_at": "2027-08-30T12:00:00Z",
                         "customer": {"name": "Cliente Teste"},
                     }
                 ],
