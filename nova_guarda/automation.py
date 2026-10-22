@@ -7,6 +7,7 @@ import requests
 from nova_guarda.alerts import raise_alert
 from nova_guarda.gestao77_service import (
     agenda_data_from_booking,
+    booking_already_ended,
     booking_month_key,
     list_pending_partner_bookings,
     month_bookings,
@@ -23,6 +24,7 @@ from nova_guarda.storage import (
     all_settings,
     auto_resolve_alerts,
     get_appointment,
+    get_booking,
     list_appointments,
     list_bookings,
     list_bookings_for_checkin,
@@ -133,6 +135,11 @@ def run_automation_once(month: int | None = None, year: int | None = None, limit
                 continue
             if not mode_allows_phone(phone):
                 item["reason"] = "Modo teste: fora da lista de cooperados de teste."
+                payload["items"].append(item)
+                continue
+            if booking_already_ended(get_booking(booking_id) or booking):
+                # A liberação do mês na 77Gestão também solta escalas antigas.
+                item["reason"] = "Escala com todos os dias no passado: não é enviada."
                 payload["items"].append(item)
                 continue
             if limit and sent_count >= limit:
