@@ -6,6 +6,7 @@ import os
 import threading
 import uuid
 import warnings
+from typing import Any
 
 import requests
 from dotenv import load_dotenv
@@ -45,6 +46,7 @@ from nova_guarda.gestao77_service import (
     run_test_for_existing_cooperator,
     schedule_data_from_booking,
     combined_month_booking,
+    Gestao77RejectedError,
     send_booking_to_partner,
     send_checkin_to_partner,
     send_checkout_to_partner,
@@ -91,7 +93,6 @@ from nova_guarda.storage import (
     list_cooperators,
     list_poller_runs,
     list_sync_events,
-    release_webhook_event,
     resolve_alert,
     resolve_open_alerts,
     save_conversation_event,
@@ -215,11 +216,21 @@ def process_webhook_payload(payload: dict) -> None:
         return
     try:
         handle_webhook_payload(payload)
-    except Exception:
-        # Libera o evento para a reentrega do provider processar de novo.
-        if event_id:
-            release_webhook_event(event_id)
-        raise
+    except Exception as exc:  # noqa: BLE001
+        # A reentrega do provider repetiria o que já foi feito (estado gravado,
+        # mensagens enviadas): o evento fica consumido e o erro vai para o log
+        # e para a equipe.
+        logger.exception("Erro ao processar webhook %s: %s", event_id, exc)
+        try:
+            raise_alert(
+                "webhook_error",
+                "webhook",
+                event_id or br_timestamp(),
+                normalize_phone(str(payload.get("phone", ""))),
+                f"Erro ao processar mensagem de {payload.get('phone') or 'desconhecido'}: {str(exc)[:200]}",
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Erro ao registrar alerta de webhook")
 
 
 TEAM_HELP = "Fale com a equipe da Guarda Nova."
@@ -250,22 +261,72 @@ def send_refusal(phone: str, reply: str) -> None:
     )
 
 
-def presence_refusal_reply(phone: str, decision: str, checkout: bool) -> str:
-    """Explica por que o toque não pôde ser aceito, em vez de um erro genérico:
-    o cooperado costuma tocar em botões de mensagens antigas ou fora de ordem."""
+def deliver_reply(phone: str, reply: str, status: str, *, location_request: bool = False, **extra: Any) -> None:
+    """Envia a resposta ao cooperado e registra na conversa. Nunca levanta:
+    o que já foi registrado não pode virar "falhou" porque o envio falhou.
+    Se o botão de localização falhar, o pedido sai como texto."""
+    try:
+        response_payload = send_zapi_location_request(phone, reply) if location_request else send_zapi_text(phone, reply)
+    except (RuntimeError, requests.RequestException, ValueError) as exc:
+        if not location_request:
+            logger.exception("Erro ao enviar resposta (%s) para %s: %s", status, phone, exc)
+            return
+        logger.exception("Botão de localização falhou, enviando como texto: %s", exc)
+        try:
+            response_payload = send_zapi_text(phone, reply)
+        except (RuntimeError, requests.RequestException, ValueError) as text_exc:
+            logger.exception("Erro ao enviar resposta (%s) para %s: %s", status, phone, text_exc)
+            return
+    append_conversation_event(
+        {
+            "received_at": br_timestamp(),
+            "payload": {
+                "type": "AutoReply",
+                "phone": phone,
+                "status": status,
+                "text": {"message": reply},
+                **extra,
+                "response": response_payload,
+            },
+        }
+    )
+
+
+AWAITING_LOCATION_STATUSES = {"location_pending", "checkout_location_pending"}
+
+
+def presence_state_reply(phone: str, decision: str, action: str) -> tuple[str, bool]:
+    """Resposta quando um toque de presença (cheguei, finalizar, atraso, não
+    vou) não pôde ser aplicado: diz em que pé o atendimento está de verdade,
+    em vez de uma frase fixa. Devolve (texto, pede_localização)."""
     appointment = get_appointment(appointment_id_from_checkin_status(decision) or "")
     status = (appointment or {}).get("local_status")
     if not appointment or normalize_phone(appointment.get("phone", "")) != phone:
-        return f"Não encontrei este atendimento para o seu número. {TEAM_HELP}"
+        return f"Não encontrei este atendimento para o seu número. {TEAM_HELP}", False
     if status == "checked_out":
-        return "Este atendimento já foi finalizado: check-in e check-out estão registrados."
+        return "Este atendimento já foi finalizado: check-in e check-out estão registrados.", False
+    if status == "location_pending":
+        return build_checkin_reply("arrived"), True
+    if status == "checkout_location_pending":
+        return build_checkin_reply("checkout_location"), True
+    if status in {"checked_in", "checkout_pending"}:
+        if action == "checkout":
+            return build_checkin_reply("checkout_location"), True
+        if action == "late":
+            return "Seu check-in deste atendimento já está registrado; não é preciso informar atraso.", False
+        if action == "no_show":
+            return (
+                f"Seu check-in deste atendimento já está registrado. Se você não vai continuar, "
+                f"{TEAM_HELP[0].lower()}{TEAM_HELP[1:]}"
+            ), False
+        return "Seu check-in deste atendimento já está registrado.", False
+    if action == "checkout":
+        return "Você ainda não fez o check-in deste atendimento. Toque em “Sim, cheguei” e envie sua localização primeiro.", False
+    if status == "no_show_reported" and action == "no_show":
+        return "Seu aviso de que não vai a este atendimento já está registrado.", False
     if status == "no_show_reported":
-        return f"Você informou que não iria a este atendimento. Se a situação mudou, {TEAM_HELP[0].lower()}{TEAM_HELP[1:]}"
-    if checkout:
-        return "Você ainda não fez o check-in deste atendimento. Toque em “Sim, cheguei” e envie sua localização primeiro."
-    if status in {"checked_in", "checkout_pending", "checkout_location_pending"}:
-        return "Seu check-in deste atendimento já está registrado."
-    return f"Não consegui registrar sua presença agora. {TEAM_HELP}"
+        return f"Você informou que não iria a este atendimento. Se a situação mudou, {TEAM_HELP[0].lower()}{TEAM_HELP[1:]}", False
+    return f"Não consegui registrar agora. {TEAM_HELP}", False
 
 
 def booking_refusal_reply(phone: str, text: str) -> str:
@@ -290,39 +351,53 @@ def request_presence_location(phone: str, decision: str, checkout: bool) -> None
         else:
             local_result = request_checkin_location(phone, decision)
             reply = build_checkin_reply("arrived")
-        reply_status = "location_requested"
-        response_payload = send_zapi_location_request(phone, reply)
     except (PermissionError, KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
         logger.exception("Erro ao solicitar localização de presença: %s", exc)
-        local_result = None
-        reply = presence_refusal_reply(phone, decision, checkout)
-        reply_status = "presence_sync_error"
-        try:
-            response_payload = send_zapi_text(phone, reply)
-        except (RuntimeError, requests.RequestException, ValueError):
-            return
-    append_conversation_event(
-        {
-            "received_at": br_timestamp(),
-            "payload": {
-                "type": "AutoReply",
-                "phone": phone,
-                "status": reply_status,
-                "text": {"message": reply},
-                "local_event": local_result,
-                "response": response_payload,
-            },
-        }
-    )
+        reply, wants_location = presence_state_reply(phone, decision, "checkout" if checkout else "arrival")
+        deliver_reply(phone, reply, "presence_sync_error", location_request=wants_location)
+        return
+    # O passo já foi registrado: a resposta é o pedido de localização, mesmo
+    # que o botão falhe (visto em produção: "Finalizar" aceito e o cooperado
+    # lendo que não tinha feito check-in).
+    deliver_reply(phone, reply, "location_requested", location_request=True, local_event=local_result)
 
 
-def reply_unrecognized_message(phone: str) -> None:
+TRIVIAL_MESSAGES = {
+    "ok", "okay", "blz", "beleza", "certo", "sim", "nao", "não", "obrigado", "obrigada", "obg", "valeu",
+    "bom dia", "boa tarde", "boa noite", "oi", "ola", "olá", "tudo bem", "confirmado", "👍", "ok obrigado",
+}
+
+
+def forward_cooperator_message(phone: str, text: str, message_id: str) -> bool:
+    """Mensagem escrita pelo cooperado (reclamação de escala, "não veio o
+    PDF", férias...) vai para a equipe, em vez de morrer no "não entendi"."""
+    normalized = " ".join(text.strip().lower().split()).strip(".!?, ")
+    if len(normalized) < 3 or normalized in TRIVIAL_MESSAGES:
+        return False
+    cooperator = get_cooperator(phone) or {}
+    name = cooperator.get("partner_name") or phone
+    try:
+        raise_alert(
+            "cooperator_message",
+            "message",
+            message_id or f"{phone}:{br_timestamp()}",
+            phone,
+            f"Mensagem de {name} ({phone}): {text.strip()[:400]}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Erro ao encaminhar mensagem do cooperado: %s", exc)
+        return False
+    return True
+
+
+def reply_unrecognized_message(phone: str, text: str = "", message_id: str = "") -> None:
     """Mensagem que não é botão nem comando: em vez de silêncio, devolve o
     próximo passo do cooperado. Limitado por telefone para não virar spam."""
     cooperator = get_cooperator(phone)
     status = (cooperator or {}).get("onboarding_status")
     if status not in {"terms_sent", "accepted"}:
         return
+    forwarded = forward_cooperator_message(phone, text, message_id) if text else False
     now = br_now().timestamp()
     if now - _FALLBACK_REPLIED_AT.get(phone, 0) < FALLBACK_REPLY_INTERVAL_SECONDS:
         return
@@ -336,6 +411,12 @@ def reply_unrecognized_message(phone: str) -> None:
             checkout = awaiting.get("local_status") == "checkout_location_pending"
             reply = build_checkin_reply("checkout_location" if checkout else "arrived")
             response_payload = send_zapi_location_request(phone, reply)
+        elif forwarded:
+            reply = (
+                "Recebemos sua mensagem e ela foi encaminhada para a equipe da Guarda Nova. "
+                "Para responder escala, check-in ou check-out, use os botões das mensagens."
+            )
+            response_payload = send_zapi_text(phone, reply)
         else:
             reply = (
                 "Não consegui entender sua mensagem. Para responder escala, check-in ou check-out, "
@@ -477,14 +558,31 @@ def handle_webhook_payload(payload: dict) -> None:
 
             sync_result = None
             reply_status = "checked_in"
+            rejection = None
             try:
                 sync_result = sync_checkin_location_for_phone(phone, latitude, longitude, address)
+            except Gestao77RejectedError as exc:
+                rejection = exc
+                reply_status = "gestao77_rejected"
             except (KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
                 logger.exception("Erro ao registrar check-in com localização: %s", exc)
                 reply_status = "presence_sync_error"
 
-            if reply_status == "presence_sync_error":
-                reply = "Não consegui registrar sua presença agora. Fale com a equipe da Guarda Nova."
+            if rejection is not None:
+                reply = (
+                    f"A 77Gestão não aceitou o {rejection.step}: {rejection.message}\n\n"
+                    f"Nada foi registrado ainda. A equipe da Guarda Nova foi avisada."
+                )
+            elif reply_status == "presence_sync_error":
+                awaiting = get_appointment_awaiting_location(phone)
+                if awaiting:
+                    step = "check-out" if awaiting.get("local_status") == "checkout_location_pending" else "check-in"
+                    reply = (
+                        f"Recebi sua localização, mas não consegui concluir o {step} agora. "
+                        f"Envie sua localização atual de novo em alguns minutos. Se continuar, {TEAM_HELP[0].lower()}{TEAM_HELP[1:]}"
+                    )
+                else:
+                    reply = f"Recebi sua localização, mas não consegui registrar agora. {TEAM_HELP}"
             elif sync_result is not None and sync_result.get("status") == "out_of_range":
                 reply_status = "out_of_range"
                 reply = (
@@ -509,47 +607,14 @@ def handle_webhook_payload(payload: dict) -> None:
                     {"at": state["updated_at"], "reply": "location", "to": reply_status, "location": location_payload}
                 )
 
-            try:
-                response_payload = send_zapi_text(phone, reply)
-                append_conversation_event(
-                    {
-                        "received_at": br_timestamp(),
-                        "payload": {
-                            "type": "AutoReply",
-                            "phone": phone,
-                            "status": reply_status,
-                            "location": location_payload,
-                            "text": {"message": reply},
-                            "gestao77_sync": sync_result,
-                            "response": response_payload,
-                        },
-                    }
-                )
-            except (RuntimeError, requests.RequestException, ValueError) as exc:
-                logger.exception("Erro ao confirmar localização recebida: %s", exc)
+            deliver_reply(phone, reply, reply_status, location=location_payload, gestao77_sync=sync_result)
 
         elif phone and decision and not payload.get("isGroup"):
             try:
                 sync_result = sync_booking_reply_for_phone(phone, decision, booking_id_from_reply(text))
             except (PermissionError, KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
                 logger.exception("Erro ao sincronizar resposta da escala no 77Gestão: %s", exc)
-                reply = booking_refusal_reply(phone, text)
-                try:
-                    response_payload = send_zapi_text(phone, reply)
-                    append_conversation_event(
-                        {
-                            "received_at": br_timestamp(),
-                            "payload": {
-                                "type": "AutoReply",
-                                "phone": phone,
-                                "status": "booking_sync_error",
-                                "text": {"message": reply},
-                                "response": response_payload,
-                            },
-                        }
-                    )
-                except (RuntimeError, requests.RequestException, ValueError) as send_exc:
-                    logger.exception("Erro ao enviar falha de escala: %s", send_exc)
+                deliver_reply(phone, booking_refusal_reply(phone, text), "booking_sync_error")
                 return
 
             next_status = "confirmed" if decision == "confirmed" else "cancelled"
@@ -563,24 +628,7 @@ def handle_webhook_payload(payload: dict) -> None:
             ]
             agenda = schedule_data_from_booking(combined_month_booking(answered)) if answered else state.get("agenda")
             reply = build_confirmation_reply(state["status"], agenda)
-
-            try:
-                response_payload = send_zapi_text(phone, reply)
-                append_conversation_event(
-                    {
-                        "received_at": br_timestamp(),
-                        "payload": {
-                            "type": "AutoReply",
-                            "phone": phone,
-                            "status": state["status"],
-                            "text": {"message": reply},
-                            "gestao77_sync": sync_result,
-                            "response": response_payload,
-                        },
-                    }
-                )
-            except (RuntimeError, requests.RequestException, ValueError) as exc:
-                logger.exception("Erro ao enviar resposta automática: %s", exc)
+            deliver_reply(phone, reply, state["status"], gestao77_sync=sync_result)
         elif phone and checkin_decision and not payload.get("isGroup"):
             if checkin_decision.startswith("checkin_late:"):
                 appointment_id = checkin_decision.split(":", 1)[1]
@@ -623,7 +671,13 @@ def handle_webhook_payload(payload: dict) -> None:
             if checkin_decision.startswith(("late_15:", "late_30:", "late_60:")):
                 try:
                     local_result = record_local_late(phone, checkin_decision)
-                    if not local_result["idempotent"]:
+                except (PermissionError, KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
+                    logger.exception("Erro ao registrar atraso local: %s", exc)
+                    reply, wants_location = presence_state_reply(phone, checkin_decision, "late")
+                    deliver_reply(phone, reply, "refused", location_request=wants_location)
+                    return
+                if not local_result["idempotent"]:
+                    try:
                         # Nova previsão substitui o alerta anterior de atraso.
                         resolve_open_alerts("late", "appointment", local_result["appointment_id"])
                         raise_alert(
@@ -634,35 +688,24 @@ def handle_webhook_payload(payload: dict) -> None:
                             f"{phone} avisou atraso de {local_result['late_minutes']} min no atendimento {local_result['appointment_id']}.",
                             "late_reported",
                         )
-                    reply = (
-                        f"Atraso de {local_result['late_minutes']} minutos registrado e a equipe da Guarda Nova foi avisada. "
-                        "Quando chegar, toque em “Sim, cheguei” na mensagem de check-in."
-                    )
-                    response_payload = send_zapi_text(phone, reply)
-                    append_conversation_event(
-                        {
-                            "received_at": br_timestamp(),
-                            "payload": {
-                                "type": "AutoReply",
-                                "phone": phone,
-                                "status": "late_reported",
-                                "text": {"message": reply},
-                                "local_event": local_result,
-                                "response": response_payload,
-                            },
-                        }
-                    )
-                except (PermissionError, KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
-                    logger.exception("Erro ao registrar atraso local: %s", exc)
-                    reply = presence_refusal_reply(phone, checkin_decision, checkout=False)
-                    if reply.startswith("Seu check-in"):
-                        reply = "Seu check-in deste atendimento já está registrado; não é preciso informar atraso."
-                    send_refusal(phone, reply)
+                    except Exception as exc:  # noqa: BLE001 - o atraso já está registrado
+                        logger.exception("Erro ao abrir alerta de atraso: %s", exc)
+                reply = (
+                    f"Atraso de {local_result['late_minutes']} minutos registrado e a equipe da Guarda Nova foi avisada. "
+                    "Quando chegar, toque em “Sim, cheguei” na mensagem de check-in."
+                )
+                deliver_reply(phone, reply, "late_reported", local_event=local_result)
                 return
             if checkin_decision.startswith(("reason_personal:", "reason_access:", "reason_client_cancelled:", "reason_other:")):
                 try:
                     local_result = record_local_no_show(phone, checkin_decision)
-                    if not local_result["idempotent"]:
+                except (PermissionError, KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
+                    logger.exception("Erro ao registrar não comparecimento local: %s", exc)
+                    reply, wants_location = presence_state_reply(phone, checkin_decision, "no_show")
+                    deliver_reply(phone, reply, "refused", location_request=wants_location)
+                    return
+                if not local_result["idempotent"]:
+                    try:
                         # Sem entity_status: só a equipe fecha, depois de resolver a cobertura.
                         raise_alert(
                             "no_show",
@@ -671,30 +714,13 @@ def handle_webhook_payload(payload: dict) -> None:
                             phone,
                             f"{phone} NÃO VAI ao atendimento {local_result['appointment_id']}: {local_result['reason']}.",
                         )
-                    reply = (
-                        f"Não comparecimento registrado com motivo: {local_result['reason']}. "
-                        "A equipe da Guarda Nova foi avisada."
-                    )
-                    response_payload = send_zapi_text(phone, reply)
-                    append_conversation_event(
-                        {
-                            "received_at": br_timestamp(),
-                            "payload": {
-                                "type": "AutoReply",
-                                "phone": phone,
-                                "status": "no_show_reported",
-                                "text": {"message": reply},
-                                "local_event": local_result,
-                                "response": response_payload,
-                            },
-                        }
-                    )
-                except (PermissionError, KeyError, RuntimeError, requests.RequestException, ValueError) as exc:
-                    logger.exception("Erro ao registrar não comparecimento local: %s", exc)
-                    reply = presence_refusal_reply(phone, checkin_decision, checkout=False)
-                    if reply.startswith("Seu check-in"):
-                        reply = f"Seu check-in deste atendimento já está registrado. Se você não vai continuar, {TEAM_HELP[0].lower()}{TEAM_HELP[1:]}"
-                    send_refusal(phone, reply)
+                    except Exception as exc:  # noqa: BLE001 - o aviso já está registrado
+                        logger.exception("Erro ao abrir alerta de não comparecimento: %s", exc)
+                reply = (
+                    f"Não comparecimento registrado com motivo: {local_result['reason']}. "
+                    "A equipe da Guarda Nova foi avisada."
+                )
+                deliver_reply(phone, reply, "no_show_reported", local_event=local_result)
                 return
 
             is_arrival = checkin_decision in {"arrived", "arrived_link"} or checkin_decision.startswith(
@@ -708,7 +734,7 @@ def handle_webhook_payload(payload: dict) -> None:
             # identificam o atendimento; o cooperado usa os botões.
 
         elif phone and not payload.get("isGroup"):
-            reply_unrecognized_message(phone)
+            reply_unrecognized_message(phone, text, str(payload.get("messageId") or ""))
 
 
 def normalize_incoming_whatsapp_payload(payload: dict) -> dict:

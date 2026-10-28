@@ -33,6 +33,7 @@ from nova_guarda.storage import (
     get_appointment,
     get_appointment_awaiting_location,
     get_booking,
+    reconcile_appointment_from_gestao77,
     reopen_changed_booking,
     set_booking_sent_signature,
     list_bookings,
@@ -235,6 +236,31 @@ class OutOfRangeError(Exception):
         self.message = message
         self.distance_meters = distance_meters
         self.max_distance_meters = max_distance_meters
+
+
+class Gestao77RejectedError(Exception):
+    """A 77Gestão respondeu e recusou o registro (4xx que não é distância):
+    não é indisponibilidade, então nada é registrado como feito."""
+
+    def __init__(self, message: str, step: str) -> None:
+        super().__init__(message)
+        self.message = message
+        self.step = step
+
+
+def _rejection_message(exc: Exception) -> str:
+    response = getattr(exc, "response", None)
+    try:
+        body = response.json() if response is not None else {}
+    except ValueError:
+        body = {}
+    message = body.get("message") if isinstance(body, dict) else ""
+    return str(message or "a 77Gestão não aceitou o registro.").strip()
+
+
+def _is_client_rejection(exc: Exception) -> bool:
+    response = getattr(exc, "response", None)
+    return isinstance(exc, requests.HTTPError) and response is not None and 400 <= response.status_code < 500
 
 
 def _out_of_range(exc: Exception) -> OutOfRangeError | None:
@@ -572,12 +598,17 @@ def sync_booking_reply_for_phone(phone: str, decision: str, booking_id: str = ""
         if not booking or normalize_phone(booking.get("phone", "")) != phone:
             raise PermissionError("Resposta de escala não pertence a este telefone.")
     if not booking_ids:
-        state = AGENDA_STATE.get(phone, {})
-        fallback = state.get("booking_id") or state.get("agenda", {}).get("booking_id")
-        if not fallback:
+        # Resposta digitada, sem o id do botão: vale para as escalas que estão
+        # esperando resposta deste número (a escala do mês pode ter várias).
+        # O estado em memória aponta para a escala do último check-in.
+        booking_ids = [
+            str(item["booking_id"])
+            for item in list_bookings("sent")
+            if normalize_phone(item.get("phone", "")) == phone
+        ]
+        if not booking_ids:
             booking = get_latest_booking_by_phone(phone)
-            fallback = booking.get("booking_id") if booking else None
-        booking_ids = [item.strip() for item in str(fallback or "").split(",") if item.strip()]
+            booking_ids = [str(booking["booking_id"])] if booking else []
     if not booking_ids:
         return None
 
@@ -706,8 +737,21 @@ def sync_checkin_location_for_phone(phone: str, latitude: Any, longitude: Any, a
             "distance_meters": exc.distance_meters,
             "attempts": attempts,
         }
-    except Exception:  # noqa: BLE001 - 77Gestão indisponível: registra aqui e reenvia depois
-        pass
+    except Exception as exc:  # noqa: BLE001
+        if _is_client_rejection(exc):
+            # Recusa de verdade (atendimento fechado, dado inválido...): dizer
+            # "registrado" deixaria o cooperado achando que concluiu.
+            step = "check-out" if checkout else "check-in"
+            raise_alert(
+                "gestao77_rejected",
+                "appointment",
+                appointment_id,
+                phone,
+                f"A 77Gestão recusou o {step} de {phone} no atendimento {appointment_id}: {_rejection_message(exc)}",
+                appointment.get("local_status", ""),
+            )
+            raise Gestao77RejectedError(_rejection_message(exc), step) from exc
+        # 77Gestão indisponível: registra aqui e a sincronização é refeita depois.
     if checkout:
         save_appointment_checkout_location(appointment_id, latitude, longitude, address)
         changed, stored = transition_appointment_checkout(appointment_id, "location")
@@ -772,6 +816,32 @@ def refresh_booking_appointments(booking: dict[str, Any]) -> dict[str, Any]:
         return booking
     update_booking_appointments(booking_id, appointments, now.isoformat(timespec="seconds"))
     return get_booking(booking_id) or booking
+
+
+def reconcile_presence_with_gestao77(appointment: dict[str, Any]) -> str | None:
+    """Antes de lembrar o cooperado de um check-in/check-out, confere se ele
+    já fez o passo direto no app da 77Gestão. Se fez, alcança o estado de lá
+    e devolve o status; sem consulta possível, devolve None e segue."""
+    if fake_gestao77_enabled():
+        return None
+    appointment_id = appointment.get("appointment_id")
+    try:
+        remote = Gestao77Client.from_env().get_appointment(appointment_id)
+    except (RuntimeError, requests.RequestException, ValueError):
+        return None
+    status = appointment.get("local_status")
+    if remote.get("checked_out_at"):
+        reached = "checked_out"
+        at = remote.get("checked_out_at")
+    elif remote.get("checked_in_at") and status in {"sent", "checkin_pending", "late_reported", "location_pending", "no_show_reported"}:
+        reached = "checked_in"
+        at = remote.get("checked_in_at")
+    else:
+        return None
+    if reconcile_appointment_from_gestao77(appointment_id, reached, str(_parse_br(at) or "")[:19]):
+        save_sync_event("appointment", appointment_id, f"reconcile:{reached}", True, {}, {"remote": reached})
+        return reached
+    return None
 
 
 def send_followup_reminder(entity_type: str, entity: dict[str, Any]) -> dict[str, Any]:

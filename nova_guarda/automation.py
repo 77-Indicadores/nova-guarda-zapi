@@ -14,6 +14,7 @@ from nova_guarda.gestao77_service import (
     refresh_booking_appointments,
     retry_pending_gestao77_syncs,
     send_booking_to_partner,
+    reconcile_presence_with_gestao77,
     send_followup_reminder,
     send_checkin_to_partner,
     send_checkout_to_partner,
@@ -282,6 +283,8 @@ def alert_ended_shift(appointment: dict[str, Any], status: str) -> dict[str, Any
     entity_id = appointment["appointment_id"]
     if not mode_allows_phone(phone) or appointment.get("alert_status") == status:
         return None
+    if reached := reconcile_presence_with_gestao77(appointment):
+        return {"entity_type": "appointment", "entity_id": entity_id, "phone": phone, "status": status, "ok": True, "action": "reconciled", "reached": reached}
     message = ENDED_SHIFT_MESSAGES[status].format(appointment_id=entity_id, phone=phone)
     raise_alert("no_response", "appointment", entity_id, phone, message, status)
     mark_entity_reminded("appointment", entity_id, status)
@@ -309,6 +312,10 @@ def follow_up(
         if now - since > wait + FOLLOW_UP_MAX_DELAY:
             # Histórico antigo (ex.: escalas de meses atrás): não vira lembrete em massa.
             return None
+        if entity_type == "appointment" and (reached := reconcile_presence_with_gestao77(entity)):
+            # O cooperado fez o passo direto no app da 77Gestão: nada a lembrar.
+            item.update({"action": "reconciled", "reached": reached})
+            return item
         item["action"] = "reminder"
         try:
             send_followup_reminder(entity_type, entity)
@@ -323,6 +330,9 @@ def follow_up(
     reminded_at = parse_br_datetime(entity.get("reminder_at"))
     if not reminded_at or now - reminded_at < wait:
         return None
+    if entity_type == "appointment" and (reached := reconcile_presence_with_gestao77(entity)):
+        item.update({"action": "reconciled", "reached": reached})
+        return item
     if entity_type == "booking":
         message = f"Escala {entity_id} de {entity.get('partner_name') or phone} continua sem resposta depois do lembrete."
     else:
@@ -431,6 +441,11 @@ def run_checkout_dispatch(settings: dict[str, str]) -> list[dict[str, Any]]:
         if now < reference_at + timedelta(minutes=after_minutes):
             item["reason"] = "Fora da janela de check-out."
             item["reference_at"] = reference_at.isoformat()
+            results.append(item)
+            continue
+        if reconcile_presence_with_gestao77(appointment) == "checked_out":
+            # Já finalizou direto no app da 77Gestão: não pede de novo.
+            item.update({"ok": True, "action": "reconciled", "reason": "Check-out já feito na 77Gestão."})
             results.append(item)
             continue
         try:

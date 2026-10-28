@@ -530,6 +530,29 @@ class CheckinCheckoutFlowTest(unittest.TestCase):
         self.assertEqual(appointment["checkin_address"], "Rua Teste, 100 - Santos")
         self.assertEqual(self.sync_count(self.appointment_id, "checked_out"), 1)
 
+    def test_finalizar_never_says_checkin_missing_when_location_button_fails(self):
+        # Visto em produção: "Finalizar" aceito, mas o botão de localização
+        # falhou e o cooperado leu que não tinha feito check-in.
+        from unittest.mock import patch
+
+        self.accept_cooperator()
+        self.create_booking()
+        self.post_checkin_send()
+        self.send_reply(f"checkin_arrived:{self.appointment_id}")
+        self.send_location()
+        self.post_checkout_send()
+
+        sent_texts = []
+        with patch("nova_guarda.routes.send_zapi_location_request", side_effect=RuntimeError("meta fora")), patch(
+            "nova_guarda.routes.send_zapi_text", side_effect=lambda phone, text: sent_texts.append(text) or {}
+        ):
+            self.send_reply(f"checkout_confirm:{self.appointment_id}")
+
+        self.assertEqual(self.storage.get_appointment(self.appointment_id)["local_status"], "checkout_location_pending")
+        self.assertEqual(len(sent_texts), 1)
+        self.assertIn("check-out", sent_texts[0])
+        self.assertNotIn("ainda não fez o check-in", sent_texts[0])
+
     def test_finishing_without_location_gets_reminder_then_alert(self):
         from datetime import timedelta
 

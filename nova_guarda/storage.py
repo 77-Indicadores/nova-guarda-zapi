@@ -222,6 +222,7 @@ def init_db() -> None:
         ensure_column(conn, "appointments", "no_show_reason", "TEXT")
         ensure_column(conn, "appointments", "checked_in_at", "TEXT")
         ensure_column(conn, "appointments", "checked_out_at", "TEXT")
+        ensure_column(conn, "appointments", "location_requested_at", "TEXT")
         ensure_column(conn, "appointments", "late_reported_at", "TEXT")
         ensure_column(conn, "appointments", "no_show_reported_at", "TEXT")
         ensure_column(conn, "appointments", "checkin_synced_at", "TEXT")
@@ -680,13 +681,20 @@ def mark_appointment_location_pending(appointment_id: str | int) -> tuple[bool, 
             raise KeyError(f"Appointment {appointment_id} não encontrado.")
         current = row["local_status"]
         if current == "location_pending":
+            # Tocou de novo: a próxima localização é para este atendimento.
+            conn.execute(
+                "UPDATE appointments SET location_requested_at = ? WHERE appointment_id = ?", (now, str(appointment_id))
+            )
             return False, row_to_appointment(row)
         # Depois de "Não vou" ele ainda pode aparecer: a presença vale mais que o aviso.
-        if current not in {"checkin_pending", "late_reported", "no_show_reported"}:
+        if current not in {"sent", "checkin_pending", "late_reported", "no_show_reported"}:
             raise ValueError(f"Transição inválida: {current} -> location_pending")
         conn.execute(
-            "UPDATE appointments SET local_status = 'location_pending', updated_at = ? WHERE appointment_id = ?",
-            (now, str(appointment_id)),
+            """
+            UPDATE appointments SET local_status = 'location_pending', location_requested_at = ?, updated_at = ?
+            WHERE appointment_id = ? AND local_status = ?
+            """,
+            (now, now, str(appointment_id), current),
         )
     return True, get_appointment(appointment_id) or {}
 
@@ -702,14 +710,42 @@ def mark_appointment_checkout_location_pending(appointment_id: str | int) -> tup
             raise KeyError(f"Appointment {appointment_id} não encontrado.")
         current = row["local_status"]
         if current == "checkout_location_pending":
+            conn.execute(
+                "UPDATE appointments SET location_requested_at = ? WHERE appointment_id = ?", (now, str(appointment_id))
+            )
             return False, row_to_appointment(row)
         if current not in {"checked_in", "checkout_pending"}:
             raise ValueError(f"Transição inválida: {current} -> checkout_location_pending")
         conn.execute(
-            "UPDATE appointments SET local_status = 'checkout_location_pending', updated_at = ? WHERE appointment_id = ?",
-            (now, str(appointment_id)),
+            """
+            UPDATE appointments SET local_status = 'checkout_location_pending', location_requested_at = ?, updated_at = ?
+            WHERE appointment_id = ? AND local_status = ?
+            """,
+            (now, now, str(appointment_id), current),
         )
     return True, get_appointment(appointment_id) or {}
+
+
+def reconcile_appointment_from_gestao77(appointment_id: str | int, status: str, at: str = "") -> bool:
+    """O cooperado fez check-in/check-out direto no app da 77Gestão: o bot
+    alcança o que já está lá, em vez de lembrar de um passo já feito."""
+    if status not in {"checked_in", "checked_out"}:
+        raise ValueError(f"Status inválido para reconciliar: {status}")
+    init_db()
+    time_column = "checked_in_at" if status == "checked_in" else "checked_out_at"
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM appointments WHERE appointment_id = ?", (str(appointment_id),)).fetchone()
+        if not row or row["local_status"] == status or row["local_status"] == "checked_out":
+            return False
+        conn.execute(
+            f"""
+            UPDATE appointments
+            SET local_status = ?, gestao77_status = ?, {time_column} = COALESCE({time_column}, ?), updated_at = ?
+            WHERE appointment_id = ?
+            """,
+            (status, status, at or timestamp(), timestamp(), str(appointment_id)),
+        )
+    return True
 
 
 def save_appointment_checkout_location(
@@ -737,7 +773,7 @@ def get_appointment_awaiting_location(phone: str) -> dict[str, Any] | None:
             """
             SELECT * FROM appointments
             WHERE phone = ? AND local_status IN ('location_pending', 'checkout_location_pending')
-            ORDER BY updated_at DESC LIMIT 1
+            ORDER BY COALESCE(location_requested_at, updated_at) DESC LIMIT 1
             """,
             (phone,),
         ).fetchone()
