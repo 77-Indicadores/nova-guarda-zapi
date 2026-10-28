@@ -33,6 +33,7 @@ from nova_guarda.storage import (
     get_appointment,
     get_appointment_awaiting_location,
     get_booking,
+    count_sync_failures_since_success,
     reconcile_appointment_from_gestao77,
     reopen_changed_booking,
     set_booking_sent_signature,
@@ -1012,6 +1013,29 @@ def record_local_no_show(phone: str, status: str) -> dict[str, Any]:
 BLOCKED_SYNC_RECHECK_MINUTES = 15
 
 
+SYNC_STUCK_ATTEMPTS = 10
+
+
+def give_up_stuck_sync(entity_type: str, entity_id: str | int, status: str, action: str, phone: str = "") -> bool:
+    """Depois de muitas falhas seguidas o reenvio para de martelar a 77Gestão
+    a cada ciclo (visto em produção: 54 tentativas da mesma escala) e a
+    equipe é avisada. A reconferência espaçada continua."""
+    failures = count_sync_failures_since_success(entity_type, entity_id, action)
+    if failures < SYNC_STUCK_ATTEMPTS:
+        return False
+    mark_sync_blocked(entity_type, entity_id, status)
+    label = "Escala" if entity_type == "booking" else "Atendimento"
+    raise_alert(
+        "sync_stuck",
+        entity_type,
+        entity_id,
+        phone,
+        f"{label} {entity_id}: o status {status} não foi aceito pela 77Gestão depois de {failures} tentativas. "
+        "Confira o registro lá.",
+    )
+    return True
+
+
 def retry_pending_gestao77_syncs() -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     # Recusas da 77Gestão saem da fila normal, mas são reconferidas de tempos em
@@ -1021,16 +1045,41 @@ def retry_pending_gestao77_syncs() -> dict[str, Any]:
     for booking in list_pending_booking_syncs() + list_blocked_syncs("booking", recheck_before):
         booking_id = booking["booking_id"]
         status = booking["local_status"]
+        if not str(booking.get("gestao77_status") or "").startswith("blocked:") and give_up_stuck_sync(
+            "booking", booking_id, status, f"schedule_response:{status}", booking.get("phone", "")
+        ):
+            results.append({"entity_type": "booking", "entity_id": booking_id, "status": status, "ok": False, "error": "stuck"})
+            continue
         try:
             response = update_booking_schedule_response(booking_id, status)
             results.append({"entity_type": "booking", "entity_id": booking_id, "status": status, "ok": True, "response": response})
         except Exception as exc:
             results.append({"entity_type": "booking", "entity_id": booking_id, "status": status, "ok": False, "error": str(exc)})
 
-    for appointment in list_pending_appointment_syncs() + list_blocked_syncs("appointment", recheck_before):
+    for appointment in list_blocked_syncs("appointment", recheck_before):
+        # Reconferência de recusa: reenviar a mesma localização daria a mesma
+        # recusa (visto em produção: check-out a 18 km reenviado a cada 15 min).
+        # Só consulta a 77Gestão; se lá já estiver registrado, sincroniza.
+        appointment_id = appointment["appointment_id"]
+        status = appointment["local_status"]
+        try:
+            remote = Gestao77Client.from_env().get_appointment(appointment_id)
+        except Exception as exc:  # noqa: BLE001
+            results.append({"entity_type": "appointment", "entity_id": appointment_id, "status": status, "ok": False, "error": str(exc)})
+            continue
+        if remote.get("checked_out_at" if status == "checked_out" else "checked_in_at"):
+            mark_appointment_synced(appointment_id, status)
+            results.append({"entity_type": "appointment", "entity_id": appointment_id, "status": status, "ok": True, "reconciled": True})
+        else:
+            mark_sync_blocked("appointment", appointment_id, status)
+
+    for appointment in list_pending_appointment_syncs():
         appointment_id = appointment["appointment_id"]
         status = appointment["local_status"]
         prefix = "checkin" if status == "checked_in" else "checkout"
+        if give_up_stuck_sync("appointment", appointment_id, status, f"status:{status}", appointment.get("phone", "")):
+            results.append({"entity_type": "appointment", "entity_id": appointment_id, "status": status, "ok": False, "error": "stuck"})
+            continue
         try:
             response = update_appointment_status(
                 appointment_id,

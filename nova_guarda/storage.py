@@ -1519,6 +1519,27 @@ def list_conversation_events_for_phone(phone: str, limit: int = 200) -> list[dic
     return [row_to_conversation_event(row) for row in rows]
 
 
+def count_sync_failures_since_success(entity_type: str, entity_id: str | int, action: str) -> int:
+    """Tentativas seguidas que falharam desde o último envio aceito."""
+    init_db()
+    with connect() as conn:
+        last_ok = conn.execute(
+            """
+            SELECT MAX(id) AS id FROM sync_events
+            WHERE entity_type = ? AND entity_id = ? AND action = ? AND ok = 1
+            """,
+            (entity_type, str(entity_id), action),
+        ).fetchone()
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS total FROM sync_events
+            WHERE entity_type = ? AND entity_id = ? AND action = ? AND ok = 0 AND id > ?
+            """,
+            (entity_type, str(entity_id), action, (last_ok["id"] if last_ok else None) or 0),
+        ).fetchone()
+    return int(row["total"] or 0)
+
+
 def list_blocked_syncs(entity_type: str, updated_before: str) -> list[dict[str, Any]]:
     """Sincronizações recusadas pela 77Gestão cuja última tentativa já é antiga
     o bastante para valer uma nova conferência."""

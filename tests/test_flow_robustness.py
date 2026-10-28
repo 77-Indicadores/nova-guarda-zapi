@@ -189,6 +189,41 @@ class FlowRobustnessTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(any(alert["kind"] == "webhook_error" for alert in self.storage.list_alerts()))
 
+    # 8. reenvio para a 77Gestão não fica infinito --------------------------------
+    def test_booking_sync_that_keeps_failing_stops_and_alerts(self):
+        from nova_guarda.gestao77_service import SYNC_STUCK_ATTEMPTS, retry_pending_gestao77_syncs
+
+        self.accept_cooperator()
+        self.create_booking("138", "apt-138", status="confirmed")
+        broken = ValueError("Expecting value: line 1 column 1 (char 0)")
+        with patch("nova_guarda.gestao77_service.fake_gestao77_enabled", return_value=False), patch(
+            "nova_guarda.gestao77_service.Gestao77Client.from_env"
+        ) as client:
+            client.return_value.update_booking_schedule_response.side_effect = broken
+            for _ in range(SYNC_STUCK_ATTEMPTS + 3):
+                retry_pending_gestao77_syncs()
+
+        calls = client.return_value.update_booking_schedule_response.call_count
+        self.assertEqual(calls, SYNC_STUCK_ATTEMPTS)
+        self.assertTrue(self.storage.get_booking("138")["gestao77_status"].startswith("blocked:"))
+        self.assertTrue(any(alert["kind"] == "sync_stuck" for alert in self.storage.list_alerts()))
+
+    def test_refused_checkout_is_rechecked_without_resending_the_location(self):
+        from nova_guarda.gestao77_service import retry_pending_gestao77_syncs
+
+        self.checked_in()
+        self.storage.mark_sync_blocked("appointment", self.appointment_id, "checked_in")
+        with self.storage.connect() as conn:
+            conn.execute("UPDATE appointments SET updated_at = '2026-01-01T00:00:00' WHERE appointment_id = ?", (self.appointment_id,))
+
+        client = Mock()
+        client.get_appointment.return_value = {"checked_in_at": "2026-08-30T12:01:00.000000Z"}
+        with patch("nova_guarda.gestao77_service.Gestao77Client.from_env", return_value=client):
+            retry_pending_gestao77_syncs()
+
+        client.update_appointment_status.assert_not_called()
+        self.assertEqual(self.storage.get_appointment(self.appointment_id)["gestao77_status"], "checked_in")
+
 
 if __name__ == "__main__":
     unittest.main()
