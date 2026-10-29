@@ -336,8 +336,12 @@ class SelfHealingFlowTest(unittest.TestCase):
                 {"id": 2, "booking_id": 1},
             ]
         }
-        with patch.object(Gestao77Client, "_get", return_value=everything):
+        with patch.object(Gestao77Client, "_post", return_value=everything) as post:
             result = Gestao77Client(token="x").list_appointments_by_booking(13)
+
+        body = post.call_args[0][1]
+        self.assertEqual(body["_method"], "GET")
+        self.assertEqual(body["conditions"]["and"]["booking_id"]["value"], 13)
 
         self.assertEqual([item["id"] for item in result["appointments"]], [32])
 
@@ -353,7 +357,9 @@ class SelfHealingFlowTest(unittest.TestCase):
                 {"id": 698, "booking_id": None, "schedule_status": "awaiting_send"},
             ]
         }
-        with patch.object(Gestao77Client, "_get", return_value=summary):
+        with patch.object(Gestao77Client, "_get", return_value=summary), patch.object(
+            Gestao77Client, "_post", return_value={"appointments": []}
+        ):
             members = Gestao77Client(token="x").list_partner_bookings_by_status(10, 2026, PENDING_SCHEDULE_STATUSES)
 
         self.assertEqual([member["booking_id"] for member in members], [11])
@@ -390,11 +396,27 @@ class SelfHealingFlowTest(unittest.TestCase):
             ]
         }
 
-        def fake_get(_client, path):
-            return appointments if path.startswith("/appointments") else summary
+        searches = []
 
-        with patch.object(Gestao77Client, "_get", fake_get):
+        def fake_post(_client, path, body):
+            # A 77Gestão filtra por cooperado e período (busca do calendário).
+            searches.append(body)
+            partner = body["conditions"]["or"]["partner_id"]["value"]
+            start, end = body["conditions"]["and"]["start_at"]["value"]
+            return {
+                "appointments": [
+                    item
+                    for item in appointments["appointments"]
+                    if item["partner_id"] == partner and start[:10] <= item["start_at"][:10] <= end[:10]
+                ]
+            }
+
+        with patch.object(Gestao77Client, "_get", return_value=summary), patch.object(Gestao77Client, "_post", fake_post):
             members = Gestao77Client(token="x").list_partner_bookings_by_status(10, 2026, PENDING_SCHEDULE_STATUSES)
+
+        # Uma busca só, filtrada, para o único cooperado com escala aguardando envio.
+        self.assertEqual(len(searches), 1)
+        self.assertEqual(searches[0]["conditions"]["and"]["start_at"]["value"], ["2026-10-01 00:00:00", "2026-10-31 23:59:59"])
 
         self.assertEqual(sorted(member["booking_id"] for member in members), ["62", "63"])
         self.assertTrue(all(member["id"] == 641 and member["name"] == "Danilo" for member in members))

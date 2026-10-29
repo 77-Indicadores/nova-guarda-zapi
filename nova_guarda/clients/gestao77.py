@@ -1,3 +1,4 @@
+import calendar
 import os
 from typing import Any
 
@@ -93,26 +94,52 @@ class Gestao77Client:
         year: int,
         statuses: set[str],
     ) -> list[dict[str, Any]]:
-        by_partner = {str(member.get("id") or member.get("partner_id")): member for member in members}
-        payload = self._get("/appointments?skipLoader=1")
-        appointments = payload.get("appointments") if isinstance(payload, dict) else None
-        period = f"{year:04d}-{month:02d}"
+        """Escalas de cada cooperado no mês, pela busca filtrada de
+        atendimentos (a mesma que o calendário da 77Gestão usa). A listagem
+        sem filtro estoura a memória do servidor com muitas escalas."""
+        last_day = calendar.monthrange(year, month)[1]
+        period = [f"{year:04d}-{month:02d}-01 00:00:00", f"{year:04d}-{month:02d}-{last_day:02d} 23:59:59"]
         found: dict[str, dict[str, Any]] = {}
-        for appointment in appointments if isinstance(appointments, list) else []:
-            if not isinstance(appointment, dict):
+        for member in members:
+            partner_id = member.get("id") or member.get("partner_id")
+            if not partner_id:
                 continue
-            member = by_partner.get(str(appointment.get("partner_id")))
-            booking = appointment.get("booking") if isinstance(appointment.get("booking"), dict) else {}
-            booking_id = str(appointment.get("booking_id") or booking.get("id") or "")
-            status = str(booking.get("status") or "")
-            if not member or not booking_id or status not in statuses:
-                continue
-            in_period = str(appointment.get("start_at") or "")[:7] == period or str(
-                booking.get("reference_date") or ""
-            )[:7] == period
-            if in_period and booking_id not in found:
-                found[booking_id] = {**member, "booking_id": booking_id, "schedule_status": status}
+            appointments = self.search_appointments(
+                {
+                    "and": {
+                        "type": {"operator": "=", "value": "appointment"},
+                        "start_at": {"operator": "between", "value": period},
+                    },
+                    "or": {
+                        "partner_id": {"operator": "=", "value": int(partner_id)},
+                        "substitute_partner_id": {"operator": "=", "value": int(partner_id)},
+                    },
+                }
+            )
+            for appointment in appointments:
+                if str(appointment.get("partner_id")) != str(partner_id):
+                    continue
+                booking = appointment.get("booking") if isinstance(appointment.get("booking"), dict) else {}
+                booking_id = str(appointment.get("booking_id") or booking.get("id") or "")
+                status = str(booking.get("status") or "")
+                if booking_id and status in statuses and booking_id not in found:
+                    found[booking_id] = {**member, "booking_id": booking_id, "schedule_status": status}
         return list(found.values())
+
+    def search_appointments(self, conditions: dict[str, Any], per_page: int = 1000) -> list[dict[str, Any]]:
+        """Busca filtrada de atendimentos: POST com _method=GET e condições no
+        corpo, como o próprio front da 77Gestão faz."""
+        payload = self._post(
+            "/appointments?skipLoader=1",
+            {
+                "order": {"column": "start_at"},
+                "pagination": {"per_page": per_page, "page": 1},
+                "conditions": conditions,
+                "_method": "GET",
+            },
+        )
+        appointments = payload.get("appointments") if isinstance(payload, dict) else None
+        return [item for item in appointments if isinstance(item, dict)] if isinstance(appointments, list) else []
 
     def update_appointment_status(
         self,
@@ -161,19 +188,15 @@ class Gestao77Client:
         return self._post("/appointments", payload)
 
     def list_appointments_by_booking(self, booking_id: str | int) -> dict[str, Any]:
-        """A 77Gestão ignora o filtro booking_id e devolve os appointments de
-        todas as escalas (confirmado contra a API real), então o filtro é
-        refeito aqui: sem isso uma escala herdaria atendimentos de outros
-        cooperados."""
-        payload = self._get(f"/appointments?booking_id={booking_id}&skipLoader=1")
-        appointments = payload.get("appointments") if isinstance(payload, dict) else None
-        if isinstance(appointments, list):
-            payload["appointments"] = [
-                item
-                for item in appointments
-                if isinstance(item, dict) and str(item.get("booking_id")) == str(booking_id)
-            ]
-        return payload
+        """A listagem por query string ignora o filtro booking_id (e sem filtro
+        estoura a memória da 77Gestão): usa a busca filtrada e confere o
+        booking de novo aqui, para uma escala nunca herdar atendimentos de outra."""
+        appointments = self.search_appointments(
+            {"and": {"booking_id": {"operator": "=", "value": int(booking_id) if str(booking_id).isdigit() else booking_id}}}
+        )
+        return {
+            "appointments": [item for item in appointments if str(item.get("booking_id")) == str(booking_id)]
+        }
 
     def get_booking_status(self, booking_id: str | int) -> str:
         """Status atual da escala na 77Gestão (vem junto dos appointments dela)."""
