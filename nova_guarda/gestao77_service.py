@@ -1022,6 +1022,17 @@ BLOCKED_SYNC_RECHECK_MINUTES = 15
 SYNC_STUCK_ATTEMPTS = 10
 
 
+def booking_removed_in_gestao77(booking_id: str | int) -> bool:
+    """A escala não tem mais nenhum atendimento na 77Gestão: foi apagada."""
+    if fake_gestao77_enabled():
+        return False
+    try:
+        result = Gestao77Client.from_env().list_appointments_by_booking(booking_id)
+    except (RuntimeError, requests.RequestException, ValueError):
+        return False
+    return isinstance(result, dict) and result.get("appointments") == []
+
+
 def give_up_stuck_sync(entity_type: str, entity_id: str | int, status: str, action: str, phone: str = "") -> bool:
     """Depois de muitas falhas seguidas o reenvio para de martelar a 77Gestão
     a cada ciclo (visto em produção: 54 tentativas da mesma escala) e a
@@ -1060,6 +1071,14 @@ def retry_pending_gestao77_syncs() -> dict[str, Any]:
             response = update_booking_schedule_response(booking_id, status)
             results.append({"entity_type": "booking", "entity_id": booking_id, "status": status, "ok": True, "response": response})
         except Exception as exc:
+            if booking_removed_in_gestao77(booking_id):
+                # Escala apagada lá (ex.: refeita com outro número): sai do
+                # reenvio e do check-in, em vez de falhar para sempre.
+                update_booking_local_status(booking_id, "removed")
+                mark_booking_synced(booking_id, "removed")
+                save_sync_event("booking", booking_id, "removed_in_gestao77", True, {}, {"previous": status})
+                results.append({"entity_type": "booking", "entity_id": booking_id, "status": "removed", "ok": True})
+                continue
             if str(booking.get("gestao77_status") or "").startswith("blocked:"):
                 # Reconferência falhou de novo: a próxima fica para depois do
                 # intervalo, em vez de repetir a cada ciclo.

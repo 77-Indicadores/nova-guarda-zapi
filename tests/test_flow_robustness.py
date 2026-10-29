@@ -266,6 +266,22 @@ class FlowRobustnessTest(unittest.TestCase):
 
         self.assertEqual([item["booking_id"] for item in imported], ["501"])
 
+    def test_booking_deleted_in_gestao77_is_retired_instead_of_retried(self):
+        from nova_guarda.gestao77_service import retry_pending_gestao77_syncs
+
+        self.accept_cooperator()
+        self.create_booking("138", "apt-138", status="confirmed")
+        with patch("nova_guarda.gestao77_service.fake_gestao77_enabled", return_value=False), patch(
+            "nova_guarda.gestao77_service.Gestao77Client.from_env"
+        ) as client:
+            client.return_value.update_booking_schedule_response.side_effect = ValueError("Expecting value")
+            client.return_value.list_appointments_by_booking.return_value = {"appointments": []}
+            retry_pending_gestao77_syncs()
+            retry_pending_gestao77_syncs()
+
+        self.assertEqual(self.storage.get_booking("138")["local_status"], "removed")
+        self.assertEqual(client.return_value.update_booking_schedule_response.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()
