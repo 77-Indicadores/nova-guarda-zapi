@@ -205,6 +205,17 @@ class FlowRobustnessTest(unittest.TestCase):
 
         calls = client.return_value.update_booking_schedule_response.call_count
         self.assertEqual(calls, SYNC_STUCK_ATTEMPTS)
+
+        # Bloqueada: a reconferência espera o intervalo, mesmo falhando de novo.
+        with self.storage.connect() as conn:
+            conn.execute("UPDATE bookings SET updated_at = '2026-01-01T00:00:00' WHERE booking_id = '138'")
+        with patch("nova_guarda.gestao77_service.fake_gestao77_enabled", return_value=False), patch(
+            "nova_guarda.gestao77_service.Gestao77Client.from_env"
+        ) as client:
+            client.return_value.update_booking_schedule_response.side_effect = broken
+            for _ in range(5):
+                retry_pending_gestao77_syncs()
+        self.assertEqual(client.return_value.update_booking_schedule_response.call_count, 1)
         self.assertTrue(self.storage.get_booking("138")["gestao77_status"].startswith("blocked:"))
         self.assertTrue(any(alert["kind"] == "sync_stuck" for alert in self.storage.list_alerts()))
 

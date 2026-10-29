@@ -1060,6 +1060,10 @@ def retry_pending_gestao77_syncs() -> dict[str, Any]:
             response = update_booking_schedule_response(booking_id, status)
             results.append({"entity_type": "booking", "entity_id": booking_id, "status": status, "ok": True, "response": response})
         except Exception as exc:
+            if str(booking.get("gestao77_status") or "").startswith("blocked:"):
+                # Reconferência falhou de novo: a próxima fica para depois do
+                # intervalo, em vez de repetir a cada ciclo.
+                mark_sync_blocked("booking", booking_id, status)
             results.append({"entity_type": "booking", "entity_id": booking_id, "status": status, "ok": False, "error": str(exc)})
 
     for appointment in list_blocked_syncs("appointment", recheck_before):
