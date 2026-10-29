@@ -93,7 +93,13 @@ def list_pending_partner_bookings(month: int, year: int, body: dict[str, Any] | 
     )
     imported = []
     for booking in bookings:
-        enriched = enrich_booking(client, booking)
+        try:
+            enriched = enrich_booking(client, booking)
+        except (RuntimeError, requests.RequestException, ValueError) as exc:
+            # Falha ao ler um cooperado não derruba as escalas dos outros;
+            # ele volta no próximo ciclo.
+            save_sync_event("booking", booking.get("booking_id") or "", "import", False, {"partner_id": booking.get("id")}, error=str(exc))
+            continue
         if str(enriched.get("schedule_status") or "") == "awaiting_send" and enriched.get("booking_id"):
             # Já enviada/respondida, de volta em "aguardando envio" e com dias
             # ou horários diferentes: a equipe alterou a escala. O cooperado

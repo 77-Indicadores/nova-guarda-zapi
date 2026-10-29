@@ -1,8 +1,27 @@
 import calendar
 import os
+import time
 from typing import Any
 
 import requests
+
+
+CONNECT_RETRIES = 2
+
+
+def _send(method: str, url: str, **kwargs: Any) -> requests.Response:
+    """Repete só quando a conexão nem chegou a abrir (rede do servidor
+    oscilando: "Network is unreachable"). Nesse caso o pedido não foi
+    entregue, então repetir é seguro mesmo para mudanças de status."""
+    for attempt in range(CONNECT_RETRIES + 1):
+        try:
+            return requests.request(method, url, **kwargs)
+        except requests.ConnectionError as exc:
+            not_connected = isinstance(exc, requests.ConnectTimeout) or "NewConnectionError" in str(exc)
+            if not not_connected or attempt == CONNECT_RETRIES:
+                raise
+            time.sleep(1 + attempt)
+    raise RuntimeError("unreachable")
 
 
 def _raise_with_body(response: requests.Response) -> None:
@@ -38,7 +57,8 @@ class Gestao77Client:
         if not email or not password:
             raise RuntimeError("Configure GESTAO77_EMAIL e GESTAO77_PASSWORD.")
 
-        response = requests.post(
+        response = _send(
+            "POST",
             f"{self.base_url}/login",
             headers={
                 "Content-Type": "application/json",
@@ -228,7 +248,8 @@ class Gestao77Client:
         if not self.token:
             raise RuntimeError("Configure GESTAO77_TOKEN ou GESTAO77_EMAIL/GESTAO77_PASSWORD.")
 
-        response = requests.get(
+        response = _send(
+            "GET",
             f"{self.base_url}{path}",
             headers={
                 "Authorization": f"Bearer {self.token}",
@@ -248,7 +269,7 @@ class Gestao77Client:
         if not self.token:
             raise RuntimeError("Configure GESTAO77_TOKEN ou GESTAO77_EMAIL/GESTAO77_PASSWORD.")
 
-        response = requests.request(
+        response = _send(
             method,
             f"{self.base_url}{path}",
             headers={

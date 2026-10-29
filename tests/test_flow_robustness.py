@@ -224,6 +224,37 @@ class FlowRobustnessTest(unittest.TestCase):
         client.update_appointment_status.assert_not_called()
         self.assertEqual(self.storage.get_appointment(self.appointment_id)["gestao77_status"], "checked_in")
 
+    # 9. rede do servidor oscilando --------------------------------------------------
+    def test_gestao77_request_retries_when_the_connection_never_opened(self):
+        from nova_guarda.clients.gestao77 import Gestao77Client
+
+        ok = Mock(status_code=200)
+        ok.json.return_value = {"appointments": []}
+        ok.raise_for_status.return_value = None
+        unreachable = requests.ConnectionError("NewConnectionError: [Errno 101] Network is unreachable")
+        with patch("nova_guarda.clients.gestao77.requests.request", side_effect=[unreachable, ok]) as request, patch(
+            "nova_guarda.clients.gestao77.time.sleep"
+        ):
+            result = Gestao77Client(base_url="https://x/api/v1", token="t").search_appointments({})
+
+        self.assertEqual(result, [])
+        self.assertEqual(request.call_count, 2)
+
+    def test_one_cooperator_failing_does_not_drop_the_others_schedules(self):
+        from nova_guarda.gestao77_service import list_pending_partner_bookings
+
+        client = Mock()
+        client.list_partner_bookings_by_status.return_value = [
+            {"id": 1, "name": "A", "booking_id": "500", "phone": self.phone, "schedule_status": "awaiting_send"},
+            {"id": 2, "name": "B", "booking_id": "501", "phone": "5513988887777", "schedule_status": "awaiting_send"},
+        ]
+        client.get_partner.side_effect = [requests.ConnectionError("Network is unreachable"), {"partner": {"phones": []}}]
+        client.list_appointments_by_booking.return_value = {"appointments": []}
+        with patch("nova_guarda.gestao77_service.Gestao77Client.from_env", return_value=client):
+            imported = list_pending_partner_bookings(11, 2026)
+
+        self.assertEqual([item["booking_id"] for item in imported], ["501"])
+
 
 if __name__ == "__main__":
     unittest.main()
