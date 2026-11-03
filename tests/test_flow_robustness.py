@@ -282,6 +282,40 @@ class FlowRobustnessTest(unittest.TestCase):
         self.assertEqual(self.storage.get_booking("138")["local_status"], "removed")
         self.assertEqual(client.return_value.update_booking_schedule_response.call_count, 1)
 
+    # 10. a automação não morre em silêncio -------------------------------------------
+    def test_poller_loop_survives_an_error_outside_the_cycle(self):
+        import nova_guarda.routes as routes
+
+        calls = []
+
+        def flaky_settings():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError("banco indisponível")
+            routes._POLLER_STOP.set()
+            return {"automation_enabled": "0", "poll_interval_minutes": "1"}
+
+        routes._POLLER_STOP.clear()
+        with patch("nova_guarda.routes.all_settings", side_effect=flaky_settings), patch.object(
+            routes._POLLER_STOP, "wait", return_value=None
+        ):
+            routes.poller_loop()
+
+        self.assertEqual(len(calls), 2)
+        routes._POLLER_STOP.clear()
+
+    def test_dead_poller_is_restarted_by_the_next_request(self):
+        import nova_guarda.routes as routes
+
+        dead = Mock()
+        dead.is_alive.return_value = False
+        self.storage.set_settings({"automation_enabled": "1"})
+        with patch.object(routes, "_POLLER_THREAD", dead), patch("nova_guarda.routes.threading.Thread") as thread:
+            self.client.get("/")
+
+        thread.return_value.start.assert_called_once()
+        self.assertTrue(any(alert["kind"] == "poller_restarted" for alert in self.storage.list_alerts()))
+
 
 if __name__ == "__main__":
     unittest.main()

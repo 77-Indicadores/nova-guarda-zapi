@@ -906,20 +906,35 @@ def poller_interval_seconds(settings: dict[str, str]) -> int:
 
 def poller_loop() -> None:
     while not _POLLER_STOP.is_set():
-        settings = all_settings()
-        if settings.get("automation_enabled") == "1":
-            with _POLLER_LOCK:
-                run_automation_once(limit=parse_positive_int(settings.get("automation_send_limit"), 25, minimum=0))
-        _POLLER_STOP.wait(poller_interval_seconds(settings))
+        interval = 300
+        try:
+            settings = all_settings()
+            interval = poller_interval_seconds(settings)
+            if settings.get("automation_enabled") == "1":
+                with _POLLER_LOCK:
+                    run_automation_once(limit=parse_positive_int(settings.get("automation_send_limit"), 25, minimum=0))
+        except Exception as exc:  # noqa: BLE001
+            # Um erro fora do ciclo (ex.: banco indisponível ao ler as
+            # configurações) não pode matar a thread: visto em produção, o
+            # ciclo parou de rodar por dias sem ninguém perceber.
+            logger.exception("Erro no laço da automação: %s", exc)
+        _POLLER_STOP.wait(interval)
 
 
 def ensure_poller_started() -> None:
     global _POLLER_THREAD
     if _POLLER_THREAD and _POLLER_THREAD.is_alive():
         return
+    restarted = _POLLER_THREAD is not None
     _POLLER_STOP.clear()
     _POLLER_THREAD = threading.Thread(target=poller_loop, name="nova-guarda-poller", daemon=True)
     _POLLER_THREAD.start()
+    if restarted:
+        logger.error("A thread da automação tinha parado e foi reiniciada.")
+        try:
+            raise_alert("poller_restarted", "system", f"poller:{br_timestamp()}", "", "A automação tinha parado e foi reiniciada.")
+        except Exception:  # noqa: BLE001
+            logger.exception("Erro ao registrar reinício da automação")
 
 
 def create_app() -> Flask:
@@ -938,6 +953,18 @@ def create_app() -> Flask:
     init_db()
     if all_settings().get("automation_enabled") == "1":
         ensure_poller_started()
+
+    @app.before_request
+    def keep_poller_alive():
+        # Vigia: qualquer requisição (webhook, painel) religa a automação se a
+        # thread tiver morrido.
+        if not (_POLLER_THREAD and _POLLER_THREAD.is_alive()):
+            try:
+                if all_settings().get("automation_enabled") == "1":
+                    ensure_poller_started()
+            except Exception:  # noqa: BLE001
+                logger.exception("Erro ao verificar a automação")
+        return None
 
     @app.before_request
     def require_login():
