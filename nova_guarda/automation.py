@@ -78,6 +78,7 @@ def run_automation_once(month: int | None = None, year: int | None = None, limit
     }
 
     try:
+        mark_progress(payload, "importando escalas")
         payload["purged_fake_bookings"] = purge_bookings_without_gestao77_id()
         try:
             bookings = list_pending_partner_bookings(month, year)
@@ -110,6 +111,7 @@ def run_automation_once(month: int | None = None, year: int | None = None, limit
             if booking.get("whatsapp_message_id") and str(booking.get("booking_id")) not in known
         ]
 
+        mark_progress(payload, f"enviando escalas ({len(bookings)})")
         if terms_dispatch_due(settings, now):
             payload["terms"] = dispatch_pending_terms(bookings, skip_sent_today=True)
             record_terms_dispatch(settings, now, payload["terms"])
@@ -163,14 +165,19 @@ def run_automation_once(month: int | None = None, year: int | None = None, limit
             payload["items"].append(item)
 
         if settings.get("auto_checkin_enabled", "1") == "1":
+            mark_progress(payload, "check-in")
             payload["checkins"] = run_checkin_dispatch(settings)
+            mark_progress(payload, "check-out")
             payload["checkouts"] = run_checkout_dispatch(settings)
 
+        mark_progress(payload, "lembretes")
         payload["followups"] = run_stale_sweep(settings, now)
         payload["alerts_resolved"] = auto_resolve_alerts()
         purge_webhook_events((now - timedelta(days=WEBHOOK_EVENT_RETENTION_DAYS)).isoformat(timespec="seconds"))
 
+        mark_progress(payload, "reenvio 77Gestão")
         payload["retry"] = retry_pending_gestao77_syncs()
+        mark_progress(payload, "fim")
         has_errors = bool(payload.get("gestao77_error")) or any(
             item.get("error")
             for group in ("items", "terms", "checkins", "checkouts", "followups")
@@ -185,6 +192,18 @@ def run_automation_once(month: int | None = None, year: int | None = None, limit
         payload["error"] = str(exc)
         run = save_poller_run("failed", payload, error=str(exc), started_at=started_at)
         return {"ok": False, "run": run, **payload}
+
+
+def mark_progress(payload: dict[str, Any], step: str) -> None:
+    """Etapa atual do ciclo, visível no painel: sem isso um ciclo travado ou
+    lento ficava invisível (visto em produção, dias sem ciclo registrado)."""
+    now = br_now()
+    timings = payload.setdefault("timings", [])
+    timings.append({"step": step, "at": now.isoformat(timespec="seconds")})
+    try:
+        set_settings({"poller_progress": f"{now:%d/%m %H:%M:%S} {step}"})
+    except Exception:  # noqa: BLE001
+        logger.exception("Erro ao registrar etapa do ciclo")
 
 
 def terms_dispatch_due(settings: dict[str, str], now: datetime) -> bool:

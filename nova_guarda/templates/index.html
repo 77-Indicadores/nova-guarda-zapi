@@ -73,6 +73,9 @@
     {% else %}
     <span class="muted text-sm">Nenhum ciclo executado ainda.</span>
     {% endif %}
+    {% if settings.poller_progress %}
+    <span class="muted text-sm">Etapa atual: {{ settings.poller_progress }}</span>
+    {% endif %}
   </div>
   <form method="post" action="{{ url_for('automation_run_ui') }}">
     <button class="primary" type="submit">Executar ciclo agora</button>
