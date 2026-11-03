@@ -84,6 +84,8 @@ from nova_guarda.storage import (
     get_booking,
     get_appointment_awaiting_location,
     get_cooperator,
+    save_sync_event,
+    upsert_cooperator,
     init_db,
     list_alerts,
     list_appointments,
@@ -1041,6 +1043,28 @@ def create_app() -> Flask:
             flash(f"Termo enviado para {phone}.")
         else:
             flash(f"Termo não enviado para {phone}: {result.get('error') or result.get('reason')}")
+        return redirect(request.referrer or url_for("cooperados"))
+
+    @app.post("/cooperados/desbloquear-termo")
+    def cooperados_desbloquear_termo():
+        """Cooperado que tocou em "Não aceito" (às vezes por engano): a equipe
+        libera e o termo é reenviado para ele aceitar."""
+        phone = normalize_phone(request.form.get("phone", ""))
+        cooperator = get_cooperator(phone)
+        if not cooperator or cooperator.get("onboarding_status") != "rejected":
+            flash(f"{phone} não está bloqueado.")
+            return redirect(request.referrer or url_for("cooperados"))
+        upsert_cooperator(phone, "not_started", cooperator.get("partner_payload") or {}, "desbloqueado pela equipe")
+        save_sync_event("cooperator", phone, "terms:unblocked", True, {"phone": phone}, {})
+        try:
+            result = send_terms_to_phone(phone, cooperator.get("partner_payload") or None, source="desbloqueio")
+        except (RuntimeError, requests.RequestException, ValueError) as exc:
+            logger.exception("Erro ao reenviar termo depois de desbloquear: %s", exc)
+            result = {"ok": False, "error": str(exc)}
+        if result.get("ok"):
+            flash(f"{phone} desbloqueado e termo reenviado.")
+        else:
+            flash(f"{phone} desbloqueado, mas o termo não foi enviado: {result.get('error') or result.get('reason')}")
         return redirect(request.referrer or url_for("cooperados"))
 
     @app.post("/cooperados/enviar-termos-pendentes")

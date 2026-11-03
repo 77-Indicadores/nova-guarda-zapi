@@ -46,6 +46,11 @@
           <input type="hidden" name="phone" value="{{ row.phone }}">
           <button class="btn" type="submit">{% if row.onboarding_status == 'terms_sent' %}Reenviar termo{% else %}Enviar termo{% endif %}</button>
         </form>
+        {% elif row.onboarding_status == 'rejected' %}
+        <form method="post" action="{{ url_for('cooperados_desbloquear_termo') }}" onsubmit="return confirm('Desbloquear {{ row.phone }} e reenviar o termo?')">
+          <input type="hidden" name="phone" value="{{ row.phone }}">
+          <button class="btn" type="submit">Desbloquear e reenviar termo</button>
+        </form>
         {% endif %}
       </td>
     </tr>

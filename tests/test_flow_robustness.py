@@ -316,6 +316,17 @@ class FlowRobustnessTest(unittest.TestCase):
         thread.return_value.start.assert_called_once()
         self.assertTrue(any(alert["kind"] == "poller_restarted" for alert in self.storage.list_alerts()))
 
+    # 11. desbloquear quem recusou o termo ---------------------------------------
+    def test_team_can_unblock_a_rejected_cooperator_and_resend_terms(self):
+        self.storage.upsert_cooperator(self.phone, "rejected", {"id": 597, "name": "Cooperado Teste", "active": 1})
+
+        html = self.client.get("/cooperados").get_data(as_text=True)
+        self.assertIn("Desbloquear e reenviar termo", html)
+
+        self.client.post("/cooperados/desbloquear-termo", data={"phone": self.phone})
+
+        self.assertEqual(self.storage.get_cooperator(self.phone)["onboarding_status"], "terms_sent")
+
 
 if __name__ == "__main__":
     unittest.main()
