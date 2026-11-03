@@ -278,7 +278,24 @@ def run_stale_sweep(settings: dict[str, str], now: datetime) -> list[dict[str, A
                 wait += timedelta(minutes=int(appointment.get("late_minutes") or 0))
             payload = appointment.get("payload") or {}
             shift_end = parse_br_datetime(payload.get("end_at") or payload.get("ends_at"))
-            if status in SHIFT_BOUND_STATUSES and shift_end and now > shift_end:
+            if status in {"checkout_pending", "checkout_location_pending"} and shift_end and now > shift_end + CHECKOUT_MAX_DELAY:
+                # Check-out de turno encerrado há muito: nada de lembrete, a
+                # equipe acerta na 77Gestão.
+                item = None
+                if appointment.get("alert_status") != status and mode_allows_phone(normalize_phone(str(appointment.get("phone") or ""))):
+                    raise_alert(
+                        "checkout_missing",
+                        "appointment",
+                        appointment["appointment_id"],
+                        appointment.get("phone", ""),
+                        f"Atendimento {appointment['appointment_id']} terminou em {shift_end:%d/%m %H:%M} sem check-out. "
+                        "Registre o check-out na 77Gestão.",
+                        status,
+                    )
+                    mark_entity_reminded("appointment", appointment["appointment_id"], status)
+                    mark_entity_alerted("appointment", appointment["appointment_id"], status)
+                    item = {"entity_type": "appointment", "entity_id": appointment["appointment_id"], "status": status, "ok": True, "action": "alert"}
+            elif status in SHIFT_BOUND_STATUSES and shift_end and now > shift_end:
                 # Turno já encerrado: lembrar o cooperado de chegar não faz sentido;
                 # a equipe é avisada direto.
                 item = alert_ended_shift(appointment, status)
@@ -432,6 +449,9 @@ def appointment_is_cancelled(appointment: dict[str, Any]) -> bool:
     return str(appointment.get("status") or "").strip().lower() in {"cancelled", "canceled", "cancelado", "cancelada"}
 
 
+CHECKOUT_MAX_DELAY = timedelta(hours=12)
+
+
 def run_checkout_dispatch(settings: dict[str, str]) -> list[dict[str, Any]]:
     after_minutes = positive_int(settings.get("checkout_after_minutes"), 60, minimum=0, maximum=10080)
     now = br_now()
@@ -460,6 +480,24 @@ def run_checkout_dispatch(settings: dict[str, str]) -> list[dict[str, Any]]:
         if now < reference_at + timedelta(minutes=after_minutes):
             item["reason"] = "Fora da janela de check-out."
             item["reference_at"] = reference_at.isoformat()
+            results.append(item)
+            continue
+        if now > reference_at + timedelta(minutes=after_minutes) + CHECKOUT_MAX_DELAY:
+            # Turno encerrado há muito tempo (ex.: automação parada por dias):
+            # perguntar "você já finalizou?" agora confunde o cooperado. A
+            # equipe acerta o check-out na 77Gestão.
+            if appointment.get("alert_status") != "checked_in":
+                raise_alert(
+                    "checkout_missing",
+                    "appointment",
+                    appointment_id,
+                    phone,
+                    f"Atendimento {appointment_id} de {phone} terminou em {reference_at:%d/%m %H:%M} sem check-out. "
+                    "Registre o check-out na 77Gestão.",
+                    "checked_in",
+                )
+                mark_entity_alerted("appointment", appointment_id, "checked_in")
+            item.update({"ok": True, "action": "alert", "reason": "Turno encerrado há mais de 12 h."})
             results.append(item)
             continue
         if reconcile_presence_with_gestao77(appointment) == "checked_out":

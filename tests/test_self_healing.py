@@ -326,6 +326,39 @@ class SelfHealingFlowTest(unittest.TestCase):
 
         return Mock()
 
+    def test_checkout_of_a_shift_that_ended_days_ago_is_not_sent(self):
+        # Visto em produção: automação parada por dias e, ao voltar, o bot
+        # perguntou "você já finalizou?" de um turno de 4 dias antes.
+        now = self.now()
+        self.create_booking(
+            appointments=[
+                {
+                    "id": "apt-old",
+                    "start_at": (now - timedelta(days=4, hours=12)).isoformat(),
+                    "end_at": (now - timedelta(days=4)).isoformat(),
+                }
+            ]
+        )
+        self.storage.upsert_appointment(
+            {
+                "id": "apt-old",
+                "start_at": (now - timedelta(days=4, hours=12)).isoformat(),
+                "end_at": (now - timedelta(days=4)).isoformat(),
+            },
+            "booking-1",
+            self.phone,
+            "checked_in",
+        )
+
+        with patch("nova_guarda.automation.send_checkout_to_partner") as send:
+            result = self.run_cycle()
+            self.run_cycle(at=now + timedelta(minutes=30))
+
+        send.assert_not_called()
+        self.assertTrue(any(item.get("action") == "alert" for item in result["checkouts"]))
+        alerts = [alert for alert in self.storage.list_alerts() if alert["kind"] == "checkout_missing"]
+        self.assertEqual(len(alerts), 1)
+
     def test_appointments_of_other_bookings_are_filtered_out(self):
         from nova_guarda.clients.gestao77 import Gestao77Client
 
