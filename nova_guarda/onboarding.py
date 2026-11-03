@@ -272,6 +272,27 @@ def reject_terms(phone: str, text: str) -> dict[str, Any]:
     phone = normalize_phone(phone)
     existing = get_cooperator(phone)
     partner = existing.get("partner_payload", {}) if existing else {}
+    if existing and existing.get("onboarding_status") == "accepted":
+        # "Não aceito" tocado numa mensagem antiga de termo, depois do aceite
+        # (visto em produção: cooperado bloqueado e sem check-in da escala que
+        # já tinha confirmado). Não bloqueia; a equipe é avisada e confirma.
+        reply = (
+            "Seu termo já está aceito e suas escalas e check-ins continuam normais. "
+            "Se você quer cancelar o aceite, fale com a equipe da Guarda Nova."
+        )
+        response = send_zapi_text(phone, reply)
+        from nova_guarda.alerts import raise_alert
+
+        raise_alert(
+            "terms_reject_after_accept",
+            "cooperator",
+            phone,
+            phone,
+            f"{existing.get('partner_name') or phone} ({phone}) tocou em “Não aceito” depois de já ter aceitado o termo. "
+            "Nada foi bloqueado; confirme com ele se quer cancelar o aceite.",
+        )
+        save_sync_event("cooperator", phone, "terms:reject_ignored", True, {"phone": phone}, {})
+        return {"status": "accepted", "reply": reply, "response": response, "cooperator": existing}
     cooperator = upsert_cooperator(phone, "rejected", partner, text)
     reply = "Recusa registrada. O fluxo de comunicações operacionais da Guarda Nova ficará bloqueado para este número."
     response = send_zapi_text(phone, reply)

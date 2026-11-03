@@ -84,6 +84,7 @@ from nova_guarda.storage import (
     get_booking,
     get_appointment_awaiting_location,
     get_cooperator,
+    has_accepted_terms_before,
     save_sync_event,
     upsert_cooperator,
     init_db,
@@ -1065,6 +1066,20 @@ def create_app() -> Flask:
             flash(f"{phone} desbloqueado e termo reenviado.")
         else:
             flash(f"{phone} desbloqueado, mas o termo não foi enviado: {result.get('error') or result.get('reason')}")
+        return redirect(request.referrer or url_for("cooperados"))
+
+    @app.post("/cooperados/restaurar-aceite")
+    def cooperados_restaurar_aceite():
+        """Volta para "aceito" quem já tinha aceitado o termo e ficou bloqueado
+        ou pendente por engano. Só vale com o aceite anterior registrado."""
+        phone = normalize_phone(request.form.get("phone", ""))
+        cooperator = get_cooperator(phone)
+        if not cooperator or not has_accepted_terms_before(phone):
+            flash(f"{phone} não tem aceite anterior registrado: envie o termo para ele aceitar.")
+            return redirect(request.referrer or url_for("cooperados"))
+        upsert_cooperator(phone, "accepted", cooperator.get("partner_payload") or {}, "aceite restaurado pela equipe")
+        save_sync_event("cooperator", phone, "terms:accept_restored", True, {"phone": phone}, {})
+        flash(f"Aceite de {phone} restaurado.")
         return redirect(request.referrer or url_for("cooperados"))
 
     @app.post("/cooperados/enviar-termos-pendentes")

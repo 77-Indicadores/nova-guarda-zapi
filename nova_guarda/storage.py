@@ -1105,6 +1105,21 @@ def list_appointments(status: str | None = None) -> list[dict[str, Any]]:
     return [row_to_appointment(row) for row in rows]
 
 
+def has_accepted_terms_before(phone: str) -> bool:
+    """O número já aceitou o termo em algum momento (registro do aceite)."""
+    init_db()
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 FROM sync_events
+            WHERE entity_type = 'cooperator' AND entity_id = ? AND action = 'terms:accepted' AND ok = 1
+            LIMIT 1
+            """,
+            (str(phone),),
+        ).fetchone()
+    return row is not None
+
+
 def list_sync_events(limit: int = 100) -> list[dict[str, Any]]:
     init_db()
     with connect() as conn:

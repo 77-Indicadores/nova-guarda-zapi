@@ -327,6 +327,26 @@ class FlowRobustnessTest(unittest.TestCase):
 
         self.assertEqual(self.storage.get_cooperator(self.phone)["onboarding_status"], "terms_sent")
 
+    def test_declining_an_old_terms_message_after_accepting_does_not_block(self):
+        self.accept_cooperator()
+
+        self.send_reply("terms_reject")
+
+        self.assertEqual(self.storage.get_cooperator(self.phone)["onboarding_status"], "accepted")
+        self.assertTrue(any(alert["kind"] == "terms_reject_after_accept" for alert in self.storage.list_alerts()))
+
+    def test_team_can_restore_a_previous_acceptance_but_not_invent_one(self):
+        self.storage.upsert_cooperator(self.phone, "terms_sent", {"id": 597, "name": "Cooperado Teste", "active": 1})
+        self.client.post("/cooperados/restaurar-aceite", data={"phone": self.phone})
+        self.assertEqual(self.storage.get_cooperator(self.phone)["onboarding_status"], "terms_sent")
+
+        self.send_reply("terms_accept")
+        self.storage.upsert_cooperator(self.phone, "rejected", {"id": 597, "name": "Cooperado Teste", "active": 1})
+        self.assertIn("Restaurar aceite", self.client.get("/cooperados").get_data(as_text=True))
+
+        self.client.post("/cooperados/restaurar-aceite", data={"phone": self.phone})
+        self.assertEqual(self.storage.get_cooperator(self.phone)["onboarding_status"], "accepted")
+
 
 if __name__ == "__main__":
     unittest.main()

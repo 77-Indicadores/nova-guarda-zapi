@@ -52,6 +52,12 @@
           <button class="btn" type="submit">Desbloquear e reenviar termo</button>
         </form>
         {% endif %}
+        {% if row.onboarding_status != 'accepted' and row.accepted_at %}
+        <form method="post" action="{{ url_for('cooperados_restaurar_aceite') }}" onsubmit="return confirm('Restaurar o aceite anterior de {{ row.phone }}?')">
+          <input type="hidden" name="phone" value="{{ row.phone }}">
+          <button class="btn" type="submit">Restaurar aceite</button>
+        </form>
+        {% endif %}
       </td>
     </tr>
     {% else %}
