@@ -326,6 +326,27 @@ class SelfHealingFlowTest(unittest.TestCase):
 
         return Mock()
 
+    def test_checkout_can_be_sent_before_the_shift_ends(self):
+        # Pedido da operação: check-out 30 min antes do fim, com o cooperado no posto.
+        now = self.now()
+        self.storage.set_settings({"checkout_after_minutes": "0", "checkout_before_minutes": "30"})
+        for apt_id, end_in in (("apt-soon", 20), ("apt-later", 45)):
+            self.create_booking(
+                booking_id=f"b-{apt_id}",
+                appointments=[{"id": apt_id, "start_at": (now - timedelta(hours=4)).isoformat(), "end_at": (now + timedelta(minutes=end_in)).isoformat()}],
+            )
+            self.storage.upsert_appointment(
+                {"id": apt_id, "start_at": (now - timedelta(hours=4)).isoformat(), "end_at": (now + timedelta(minutes=end_in)).isoformat()},
+                f"b-{apt_id}",
+                self.phone,
+                "checked_in",
+            )
+
+        with patch("nova_guarda.automation.send_checkout_to_partner", return_value={"status": "checkout_pending"}) as send:
+            self.run_cycle()
+
+        self.assertEqual([call.args[0] for call in send.call_args_list], ["apt-soon"])
+
     def test_checkout_of_a_shift_that_ended_days_ago_is_not_sent(self):
         # Visto em produção: automação parada por dias e, ao voltar, o bot
         # perguntou "você já finalizou?" de um turno de 4 dias antes.

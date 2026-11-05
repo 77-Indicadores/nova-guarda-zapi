@@ -77,6 +77,10 @@
           <input type="number" min="0" max="10080" name="checkout_after_minutes" value="{{ cfg.checkout_after_minutes }}">
         </label>
         <label style="display:flex;flex-direction:column;gap:6px">
+          Check-out antes do fim (min)
+          <input type="number" min="0" max="1440" name="checkout_before_minutes" value="{{ cfg.checkout_before_minutes }}">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:6px">
           Hora do termo (0–23)
           <input type="number" min="0" max="23" name="terms_send_hour" value="{{ cfg.terms_send_hour }}">
         </label>

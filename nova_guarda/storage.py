@@ -259,6 +259,7 @@ SETTING_DEFAULTS = {
     "auto_checkin_enabled": "1",
     "checkin_lead_minutes": "120",
     "checkout_after_minutes": "60",
+    "checkout_before_minutes": "0",
     "terms_auto_enabled": "1",
     "terms_send_hour": "7",
     "terms_last_dispatch_date": "",

@@ -1246,6 +1246,7 @@ def create_app() -> Flask:
         auto_checkin_enabled = "1" if request.form.get("auto_checkin_enabled") == "1" else "0"
         checkin_lead_minutes = str(parse_positive_int(request.form.get("checkin_lead_minutes"), 120, minimum=0, maximum=10080))
         checkout_after_minutes = str(parse_positive_int(request.form.get("checkout_after_minutes"), 60, minimum=0, maximum=10080))
+        checkout_before_minutes = str(parse_positive_int(request.form.get("checkout_before_minutes"), 0, minimum=0, maximum=1440))
         terms_auto_enabled = "1" if request.form.get("terms_auto_enabled") == "1" else "0"
         terms_send_hour = str(parse_positive_int(request.form.get("terms_send_hour"), 7, minimum=0, maximum=23))
         set_settings(
@@ -1273,6 +1274,7 @@ def create_app() -> Flask:
                 "auto_checkin_enabled": auto_checkin_enabled,
                 "checkin_lead_minutes": checkin_lead_minutes,
                 "checkout_after_minutes": checkout_after_minutes,
+                "checkout_before_minutes": checkout_before_minutes,
             }
         )
         if automation_enabled == "1":

@@ -454,6 +454,7 @@ CHECKOUT_MAX_DELAY = timedelta(hours=12)
 
 def run_checkout_dispatch(settings: dict[str, str]) -> list[dict[str, Any]]:
     after_minutes = positive_int(settings.get("checkout_after_minutes"), 60, minimum=0, maximum=10080)
+    before_minutes = positive_int(settings.get("checkout_before_minutes"), 0, minimum=0, maximum=1440)
     now = br_now()
     results: list[dict[str, Any]] = []
     for appointment in list_appointments("checked_in"):
@@ -477,7 +478,13 @@ def run_checkout_dispatch(settings: dict[str, str]) -> list[dict[str, Any]]:
             item["error"] = "Appointment sem horário interpretável para check-out."
             results.append(item)
             continue
-        if now < reference_at + timedelta(minutes=after_minutes):
+        payload = appointment.get("payload") or {}
+        has_end = bool(payload.get("end_at") or payload.get("ends_at"))
+        # Check-out pode sair antes do fim do turno (ex.: 30 min antes), para o
+        # cooperado ainda estar no posto ao mandar a localização. Sem horário
+        # de fim conhecido, nunca antecipa.
+        opens_at = reference_at + timedelta(minutes=after_minutes) - timedelta(minutes=before_minutes if has_end else 0)
+        if now < opens_at:
             item["reason"] = "Fora da janela de check-out."
             item["reference_at"] = reference_at.isoformat()
             results.append(item)
