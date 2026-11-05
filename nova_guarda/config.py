@@ -14,7 +14,7 @@ WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "").strip()
 WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "").strip()
 # Templates aprovados na Meta, usados para iniciar conversa fora da janela de 24h.
 WHATSAPP_TEMPLATE_LANGUAGE = os.getenv("WHATSAPP_TEMPLATE_LANGUAGE", "pt_BR").strip()
-WHATSAPP_TEMPLATE_TERMS = os.getenv("WHATSAPP_TEMPLATE_TERMS", "nova_guarda_ativacao_termo").strip()
+WHATSAPP_TEMPLATE_TERMS = os.getenv("WHATSAPP_TEMPLATE_TERMS", "guarda_nova_termo_escala_v2").strip()
 # Template da escala do período: cabeçalho DOCUMENTO (PDF da escala), corpo com
 # {{1}} nome, {{2}} período, {{3}} dias de trabalho, e botões Confirmar / Recusar.
 WHATSAPP_TEMPLATE_BOOKING = os.getenv("WHATSAPP_TEMPLATE_BOOKING", "nova_guarda_escala_periodo_v1").strip()

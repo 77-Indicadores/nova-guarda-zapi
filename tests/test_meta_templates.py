@@ -221,7 +221,7 @@ class MetaTemplatesTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual([message["type"] for message in self.sent], ["template"])
-        self.assertEqual(self.template(self.sent[0])["name"], "nova_guarda_ativacao_termo")
+        self.assertEqual(self.template(self.sent[0])["name"], "guarda_nova_termo_escala_v2")
         self.assertEqual(self.button_payloads(self.sent[0]), ["terms_accept", "terms_reject"])
 
     def test_checkout_inside_the_window_skips_the_template(self):
