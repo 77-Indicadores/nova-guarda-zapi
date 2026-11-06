@@ -980,6 +980,33 @@ def get_cooperator(phone: str) -> dict[str, Any] | None:
     return row_to_cooperator(row) if row else None
 
 
+def follow_cooperator_phone_change(partner_id: str | int, current_phone: str) -> int:
+    """A 77Gestão trocou o telefone do cooperado: o cadastro do número antigo
+    passa para o novo (com o status do termo), em vez de a tela de Cooperados
+    ficar com o número velho. Se o novo já tem cadastro, o antigo sai.
+    Devolve quantos cadastros antigos foram ajustados."""
+    partner_id = str(partner_id or "").strip()
+    if not partner_id or not current_phone:
+        return 0
+    init_db()
+    with connect() as conn:
+        old_rows = conn.execute(
+            "SELECT phone FROM cooperators WHERE partner_id = ? AND phone != ?", (partner_id, current_phone)
+        ).fetchall()
+        if not old_rows:
+            return 0
+        has_current = conn.execute("SELECT 1 FROM cooperators WHERE phone = ?", (current_phone,)).fetchone()
+        for index, row in enumerate(old_rows):
+            if not has_current and index == 0:
+                conn.execute(
+                    "UPDATE cooperators SET phone = ?, updated_at = ? WHERE phone = ?",
+                    (current_phone, timestamp(), row["phone"]),
+                )
+            else:
+                conn.execute("DELETE FROM cooperators WHERE phone = ?", (row["phone"],))
+    return len(old_rows)
+
+
 def upsert_cooperator(
     phone: str,
     status: str,

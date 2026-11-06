@@ -34,6 +34,7 @@ from nova_guarda.storage import (
     get_appointment_awaiting_location,
     get_booking,
     count_sync_failures_since_success,
+    follow_cooperator_phone_change,
     reconcile_appointment_from_gestao77,
     reopen_changed_booking,
     set_booking_sent_signature,
@@ -105,7 +106,10 @@ def list_pending_partner_bookings(month: int, year: int, body: dict[str, Any] | 
             # ou horários diferentes: a equipe alterou a escala. O cooperado
             # recebe de novo para confirmar.
             reopen_changed_booking(enriched["booking_id"], schedule_signature({"payload": enriched}))
-        imported.append(upsert_booking(enriched))
+        stored = upsert_booking(enriched)
+        if stored.get("phone") and stored.get("partner_id"):
+            follow_cooperator_phone_change(stored["partner_id"], normalize_phone(stored["phone"]))
+        imported.append(stored)
     return imported
 
 

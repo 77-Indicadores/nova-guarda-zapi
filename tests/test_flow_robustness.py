@@ -347,6 +347,26 @@ class FlowRobustnessTest(unittest.TestCase):
         self.client.post("/cooperados/restaurar-aceite", data={"phone": self.phone})
         self.assertEqual(self.storage.get_cooperator(self.phone)["onboarding_status"], "accepted")
 
+    def test_cooperator_record_follows_a_phone_change_in_gestao77(self):
+        old, new = "5511925800430", "5511925808430"
+        self.storage.upsert_cooperator(old, "terms_sent", {"id": 725, "name": "Eduardo", "active": 1})
+
+        moved = self.storage.follow_cooperator_phone_change("725", new)
+
+        self.assertEqual(moved, 1)
+        self.assertIsNone(self.storage.get_cooperator(old))
+        self.assertEqual(self.storage.get_cooperator(new)["onboarding_status"], "terms_sent")
+
+    def test_old_number_record_is_dropped_when_the_new_one_already_exists(self):
+        old, new = "5511925800430", "5511925808430"
+        self.storage.upsert_cooperator(old, "terms_sent", {"id": 725, "name": "Eduardo", "active": 1})
+        self.storage.upsert_cooperator(new, "accepted", {"id": 725, "name": "Eduardo", "active": 1})
+
+        self.storage.follow_cooperator_phone_change("725", new)
+
+        self.assertIsNone(self.storage.get_cooperator(old))
+        self.assertEqual(self.storage.get_cooperator(new)["onboarding_status"], "accepted")
+
 
 if __name__ == "__main__":
     unittest.main()
