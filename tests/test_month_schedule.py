@@ -214,3 +214,18 @@ class MonthScheduleFlowTest(unittest.TestCase):
         self.import_from_gestao77([self.member("62")])
 
         self.assertEqual(self.storage.get_booking("62")["local_status"], "sent")
+
+    def test_team_can_resend_a_month_schedule_still_waiting_for_an_answer(self):
+        from nova_guarda.gestao77_service import send_booking_to_partner
+
+        self.month_booking("521", [24, 26])
+        self.month_booking("112", [25])
+        send_booking_to_partner("521")
+        before = len(self.sent_schedules())
+
+        self.assertIn("Reenviar escala", self.client.get("/escalas").get_data(as_text=True))
+        self.client.post("/escalas/521/reenviar")
+
+        self.assertEqual(len(self.sent_schedules()), before + 1)
+        self.assertIn("booking_confirm:112,521", [b["id"] for b in self.sent_schedules()[0]["payload"]["buttons"]])
+        self.assertEqual(self.storage.get_booking("521")["local_status"], "sent")

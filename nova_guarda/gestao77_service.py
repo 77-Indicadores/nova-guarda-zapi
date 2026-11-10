@@ -539,6 +539,24 @@ def send_booking_to_partner(booking_id: int | str, phone: str = "") -> dict[str,
     }
 
 
+def resend_booking_to_partner(booking_id: int | str) -> dict[str, Any]:
+    """Reenvia a escala do mês que já foi enviada e ainda não teve resposta
+    (ex.: o cooperado perdeu a mensagem). Não muda o status: a resposta
+    continua valendo para todas as escalas do mês."""
+    booking = get_booking(booking_id)
+    if not booking:
+        raise RuntimeError(f"Booking {booking_id} não encontrado no storage local.")
+    if booking.get("local_status") != "sent":
+        raise ValueError("Só é possível reenviar escala enviada que ainda aguarda resposta.")
+    phone = normalize_phone(booking.get("phone", ""))
+    if not phone:
+        raise RuntimeError("Escala sem telefone.")
+    month_booking = combined_month_booking(month_bookings(booking, {"sent"}))
+    message, response = send_schedule_message(month_booking, phone, schedule_data_from_booking(month_booking))
+    save_sync_event("booking", month_booking["booking_id"], "whatsapp:resent", True, {"phone": phone}, response)
+    return {"booking_id": month_booking["booking_id"], "phone": phone, "message": message, "whatsapp": response}
+
+
 def send_checkin_to_partner(
     appointment_id: int | str,
     phone: str,

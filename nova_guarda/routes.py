@@ -47,6 +47,7 @@ from nova_guarda.gestao77_service import (
     schedule_data_from_booking,
     combined_month_booking,
     Gestao77RejectedError,
+    resend_booking_to_partner,
     send_booking_to_partner,
     send_checkin_to_partner,
     send_checkout_to_partner,
@@ -1668,6 +1669,16 @@ def create_app() -> Flask:
     def api_retry_pending_syncs():
         result = retry_pending_gestao77_syncs()
         return jsonify(result), 200 if result["ok"] else 207
+
+    @app.post("/escalas/<booking_id>/reenviar")
+    def escala_reenviar(booking_id: str):
+        try:
+            result = resend_booking_to_partner(booking_id)
+            flash(f"Escala {result['booking_id']} reenviada para {result['phone']}.")
+        except (RuntimeError, requests.RequestException, ValueError) as exc:
+            logger.exception("Erro ao reenviar escala %s: %s", booking_id, exc)
+            flash(f"Escala {booking_id} não reenviada: {exc}")
+        return redirect(request.referrer or url_for("escalas"))
 
     @app.post("/api/bookings/<booking_id>/send")
     def api_send_booking(booking_id: str):

@@ -12,7 +12,7 @@
   <p class="card-sub">Ordem operacional: buscar aguardando envio → enviar WhatsApp com sucesso → persistir envio → POST <code>sent</code> na 77Gestão.</p>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Booking</th><th>Cooperado</th><th>Telefone</th><th>Status local</th><th>77Gestão</th><th>Provider</th><th>Última atualização</th></tr></thead>
+      <thead><tr><th>Booking</th><th>Cooperado</th><th>Telefone</th><th>Status local</th><th>77Gestão</th><th>Provider</th><th>Última atualização</th><th></th></tr></thead>
       <tbody>
       {% for row in bookings %}
       <tr>
@@ -23,9 +23,16 @@
         <td>{{ row.gestao77_status or '-' }}</td>
         <td>{{ row.provider or '-' }}</td>
         <td>{{ row.updated_at|brt }}</td>
+        <td>
+          {% if row.local_status == 'sent' and row.phone %}
+          <form method="post" action="{{ url_for('escala_reenviar', booking_id=row.booking_id) }}" onsubmit="return confirm('Reenviar a escala para {{ row.phone }}?')">
+            <button class="btn" type="submit">Reenviar escala</button>
+          </form>
+          {% endif %}
+        </td>
       </tr>
       {% else %}
-      <tr><td colspan="7" class="muted" style="text-align:center;padding:24px">Nenhuma escala local ainda.</td></tr>
+      <tr><td colspan="8" class="muted" style="text-align:center;padding:24px">Nenhuma escala local ainda.</td></tr>
       {% endfor %}
       </tbody>
     </table>
