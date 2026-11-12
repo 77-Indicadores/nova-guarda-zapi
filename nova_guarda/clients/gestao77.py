@@ -161,6 +161,22 @@ class Gestao77Client:
         appointments = payload.get("appointments") if isinstance(payload, dict) else None
         return [item for item in appointments if isinstance(item, dict)] if isinstance(appointments, list) else []
 
+    def list_additional_durations(self, start: str, end: str) -> list[dict[str, Any]]:
+        """Plantões avulsos ("Duração Adicional"): atendimentos fora de
+        escala (sem booking) que começam entre start e end."""
+        return [
+            item
+            for item in self.search_appointments(
+                {
+                    "and": {
+                        "type": {"operator": "=", "value": "additional_duration"},
+                        "start_at": {"operator": "between", "value": [start, end]},
+                    }
+                }
+            )
+            if str(item.get("type") or "") == "additional_duration"
+        ]
+
     def update_appointment_status(
         self,
         appointment_id: str,

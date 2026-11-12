@@ -9,6 +9,7 @@ from nova_guarda.gestao77_service import (
     agenda_data_from_booking,
     booking_already_ended,
     booking_month_key,
+    import_additional_durations,
     list_pending_partner_bookings,
     month_bookings,
     refresh_booking_appointments,
@@ -165,6 +166,11 @@ def run_automation_once(month: int | None = None, year: int | None = None, limit
             payload["items"].append(item)
 
         if settings.get("auto_checkin_enabled", "1") == "1":
+            mark_progress(payload, "plantões avulsos")
+            try:
+                payload["additional_durations"] = import_additional_durations(now)
+            except (RuntimeError, requests.RequestException, ValueError) as exc:
+                payload["additional_durations"] = {"error": str(exc)}
             mark_progress(payload, "check-in")
             payload["checkins"] = run_checkin_dispatch(settings)
             mark_progress(payload, "check-out")

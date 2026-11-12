@@ -825,7 +825,7 @@ def refresh_booking_appointments(booking: dict[str, Any]) -> dict[str, Any]:
     por hora por escala): atendimento novo passa a receber check-in e
     atendimento removido/cancelado lá deixa de receber. Se a consulta falhar,
     segue com a lista local."""
-    if fake_gestao77_enabled():
+    if fake_gestao77_enabled() or is_additional_duration_booking(booking.get("booking_id")):
         return booking
     payload = booking.get("payload") or {}
     now = br_now()
@@ -845,6 +845,76 @@ def refresh_booking_appointments(booking: dict[str, Any]) -> dict[str, Any]:
         return booking
     update_booking_appointments(booking_id, appointments, now.isoformat(timespec="seconds"))
     return get_booking(booking_id) or booking
+
+
+ADDITIONAL_DURATION_PREFIX = "extra-"
+ADDITIONAL_DURATION_LOOKBACK = timedelta(hours=24)
+ADDITIONAL_DURATION_LOOKAHEAD = timedelta(days=2)
+
+
+def is_additional_duration_booking(booking_id: Any) -> bool:
+    return str(booking_id or "").startswith(ADDITIONAL_DURATION_PREFIX)
+
+
+def import_additional_durations(now: datetime | None = None) -> dict[str, Any]:
+    """Plantões avulsos ("Duração Adicional" na 77Gestão) não fazem parte de
+    escala: o cooperado não recebe escala/PDF para confirmar, mas recebe
+    check-in e check-out normalmente. Cada um vira uma escala local já
+    confirmada ("extra-<id do atendimento>"), que segue o fluxo de presença."""
+    now = now or br_now()
+    start = (now - ADDITIONAL_DURATION_LOOKBACK).astimezone(BR_TZ)
+    end = (now + ADDITIONAL_DURATION_LOOKAHEAD).astimezone(BR_TZ)
+    client = Gestao77Client.from_env()
+    items = client.list_additional_durations(start.strftime("%Y-%m-%d %H:%M:%S"), end.strftime("%Y-%m-%d %H:%M:%S"))
+    result: dict[str, Any] = {"imported": [], "removed": [], "errors": []}
+    partners: dict[str, dict[str, Any]] = {}
+    seen: set[str] = set()
+    for appointment in items:
+        appointment_id = str(appointment.get("id") or "")
+        partner_id = str(appointment.get("substitute_partner_id") or appointment.get("partner_id") or "")
+        if not appointment_id or not partner_id:
+            continue
+        booking_id = f"{ADDITIONAL_DURATION_PREFIX}{appointment_id}"
+        seen.add(booking_id)
+        try:
+            if partner_id not in partners:
+                payload = client.get_partner(partner_id)
+                partner = payload.get("partner", payload) if isinstance(payload, dict) else {}
+                partners[partner_id] = partner if isinstance(partner, dict) else {}
+            partner = partners[partner_id]
+            member = {
+                "id": partner_id,
+                "name": partner.get("name") or "",
+                "booking_id": booking_id,
+                "schedule_status": "additional_duration",
+                "additional_duration": True,
+                "partner": partner,
+                "phones": partner.get("phones", []),
+                "appointments": [appointment],
+                "first_appointment_id": appointment_id,
+            }
+            existing = get_booking(booking_id)
+            if existing and existing.get("local_status") == "removed":
+                update_booking_local_status(booking_id, "confirmed")
+            stored = upsert_booking(member, local_status="confirmed")
+            if not stored.get("gestao77_status"):
+                # Não há escala para responder na 77Gestão.
+                mark_booking_synced(booking_id, "confirmed")
+            result["imported"].append(booking_id)
+        except (RuntimeError, requests.RequestException, ValueError) as exc:
+            result["errors"].append({"booking_id": booking_id, "error": str(exc)})
+    # Avulso apagado na 77Gestão (dentro da janela consultada) deixa de
+    # receber check-in.
+    for booking in list_bookings("confirmed"):
+        booking_id = str(booking.get("booking_id") or "")
+        if not is_additional_duration_booking(booking_id) or booking_id in seen:
+            continue
+        appointments = (booking.get("payload") or {}).get("appointments") or []
+        starts_at = _parse_br(appointments[0].get("start_at")) if appointments and isinstance(appointments[0], dict) else None
+        if starts_at and start <= starts_at <= end and starts_at > now:
+            update_booking_local_status(booking_id, "removed")
+            result["removed"].append(booking_id)
+    return result
 
 
 def reconcile_presence_with_gestao77(appointment: dict[str, Any]) -> str | None:
